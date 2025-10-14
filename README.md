@@ -98,10 +98,6 @@ The project supports various language models including:
 - Qwen models
 - Other transformer-based models via the VERL framework
 
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
 ### Development Setup
 
 1. Fork the repository
@@ -113,7 +109,7 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ## Research
 
-This project is part of ongoing research into query-conditioned guidelines for language models. For more details about the methodology and results, please refer to our research papers (to be added).
+This project is part of ongoing research into query-conditioned guidelines for language models.
 
 ## License
 
@@ -124,23 +120,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Built on top of the [VERL](https://github.com/volcengine/verl) framework
 - Uses datasets from various research communities
 - Thanks to all contributors and the open-source community
-
-## Citation
-
-If you use this code in your research, please cite our work:
-
-```bibtex
-@article{your-paper-2024,
-  title={Query Conditioned Guidelines for Language Models},
-  author={Your Name},
-  journal={Your Journal},
-  year={2024}
-}
-```
-
-## Contact
-
-For questions or collaboration, please contact [your-email@domain.com] or open an issue on GitHub.
 
 ## Roadmap
 
