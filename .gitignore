@@ -1,0 +1,201 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Machine Learning / Deep Learning
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.model
+*.weights
+
+# Data files
+*.csv
+*.tsv
+*.json
+*.jsonl
+*.parquet
+*.feather
+*.arrow
+
+# Large model files
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+
+# Logs
+logs/
+*.log
+*.out
+*.err
+
+# Checkpoints and model outputs
+checkpoints/
+models/checkpoints/
+models/frozen/
+outputs/
+results/training/
+results/baseline/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git submodules (we'll add verl as a submodule)
+# verl/
+
+# Large data directories (uncomment if you don't want to track data)
+# data/
+# datasets/
+
+# Cache directories
+.cache/
+cache/
+__pycache__/
+
+# Ray temporary files
+/tmp/ray/
+
+# CUDA/GPU related
+*.cu
+*.cuh
+*.cubin
+*.fatbin
+*.ptx
+
+# Flash Attention wheels
+*.whl
+*.whl.*
+
+# FlashInfer wheels
+flashinfer_python-*.whl
