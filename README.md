@@ -48,6 +48,7 @@ This repository contains research code and experiments for developing and evalua
    cd <repo-name>
    git submodule update --init --recursive
    ```
+   **Important:** The `git submodule update --init --recursive` command is required to download the VERL framework dependency.
 
 2. **Install Python dependencies:**
    ```bash
