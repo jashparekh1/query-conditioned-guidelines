@@ -1,0 +1,1 @@
+python examples/data_preprocess/guidelines.py --local_save_dir /shared/data2/jiashuo5/verl/data/gsm8k_guidelines_processed
