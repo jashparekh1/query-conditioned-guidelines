@@ -2,9 +2,9 @@
 # GSM8K Baseline Evaluation Runner
 # Simple wrapper script to run GSM8K evaluation with common configurations
 
-MODEL_PATH="/shared/data2/jashrp2/query_conditioned_guidelines/models/frozen/Qwen2.5-3B-Instruct"
-DATASET_PATH="/shared/data2/jashrp2/query_conditioned_guidelines/data/gsm8k/test.parquet"
-SCRIPT_PATH="/shared/data2/jashrp2/query_conditioned_guidelines/tests/evaluate_gsm8k_baseline.py"
+MODEL_PATH="${MODEL_DIR}frozen/Qwen2.5-3B-Instruct"
+DATASET_PATH="${DATA_DIR}gsm8k/test.parquet"
+SCRIPT_PATH="${TEST_DIR}evaluate_gsm8k_baseline.py"
 
 # Default values
 MAX_SAMPLES=""

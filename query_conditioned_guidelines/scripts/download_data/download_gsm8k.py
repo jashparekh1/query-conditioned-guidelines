@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Download StrategyQA dataset"""
+"""Download GSM8K dataset"""
 from datasets import load_dataset
 import pandas as pd
 from pathlib import Path
 
 # Setup paths
-data_dir = Path(__file__).parent.parent.parent / "data" / "strategyqa"
+data_dir = Path(__file__).parent.parent.parent / "data" / "gsm8k"
 data_dir.mkdir(parents=True, exist_ok=True)
 
-print("Downloading StrategyQA dataset...")
-dataset = load_dataset("ChilleD/StrategyQA")
+print("Downloading GSM8K dataset...")
+dataset = load_dataset("gsm8k", "main")
 
 print("Converting train split...")
 train_df = pd.DataFrame(dataset['train'])

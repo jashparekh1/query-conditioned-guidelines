@@ -148,6 +148,7 @@ models/frozen/
 outputs/
 results/training/
 results/baseline/
+results/cache/
 
 # Temporary files
 *.tmp

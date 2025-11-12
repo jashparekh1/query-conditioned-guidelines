@@ -6,7 +6,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 
 # Setup paths
-data_dir = Path(__file__).parent.parent / "data" / "math"
+data_dir = Path(__file__).parent.parent.parent / "data" / "math"
 data_dir.mkdir(parents=True, exist_ok=True)
 
 print("Downloading MATH dataset...")

@@ -10,10 +10,13 @@ import logging
 import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any
+import dotenv
 
 # Add the project root to the path for imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+dotenv.load_dotenv()
 
 try:
     import torch
@@ -243,7 +246,8 @@ class QwenInferenceTester:
 
 def main():
     """Main test function."""
-    model_path = "/shared/data2/jashrp2/query_conditioned_guidelines/models/frozen/Qwen2.5-3B-Instruct"
+    # model_path = "/shared/data2/jashrp2/query_conditioned_guidelines/models/frozen/Qwen2.5-3B-Instruct"
+    model_path = os.getenv("MODEL_DIR") + "frozen/Qwen2.5-3B-Instruct"
     
     print("=" * 60)
     print("Qwen2.5-3B-Instruct Inference Test")

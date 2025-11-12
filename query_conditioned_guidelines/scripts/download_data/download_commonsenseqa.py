@@ -5,7 +5,7 @@ import pandas as pd
 from pathlib import Path
 
 # Setup paths
-data_dir = Path(__file__).parent.parent / "data" / "commonsenseqa"
+data_dir = Path(__file__).parent.parent.parent / "data" / "commonsenseqa"
 data_dir.mkdir(parents=True, exist_ok=True)
 
 print("Downloading CommonsenseQA dataset...")
