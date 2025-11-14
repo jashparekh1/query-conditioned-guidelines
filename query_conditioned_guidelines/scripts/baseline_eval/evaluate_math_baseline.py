@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 import dotenv
 import math
+import time
 
 from prompt_builder import PromptBuilder, COTPromptBuilder, ICLPromptBuilder
 
@@ -438,14 +439,16 @@ class MATHEvaluator:
                 if b is None:
                     continue
 
-                logger.info(f"Processing batch {idx+1}/{len(batches)}")
-
+                t_start = time.time()
                 result = self.evaluate_batch(b, prompt_builder, cache)
                 results += result
 
                 for r in result:
                     if r["is_correct"]:
                         correct_count += 1
+
+                logger.info(f"Processed batch {idx+1}/{len(batches)} in {round(time.time() - t_start, 3)}")
+
 
                 # Log progress + cache every 10 batches
                 if (idx + 1) % 10 == 0:

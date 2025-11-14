@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 import dotenv
 import math
+import time
 
 from prompt_builder import PromptBuilder, COTPromptBuilder, ICLPromptBuilder
 
@@ -337,7 +338,7 @@ class GSM8KEvaluator:
         max_samples: Optional[int] = None,
         batch_size: int = 8
     ) -> Dict[str, Any]:
-        """Evaluate the model on the MATH dataset."""
+        """Evaluate the model on the GSM8K dataset."""
         try:
             logger.info(f"Loading dataset from: {dataset_path}")
             df = pd.read_parquet(dataset_path)
@@ -363,7 +364,7 @@ class GSM8KEvaluator:
             elif prompt_template == "icl":
                 prompt_builder = ICLPromptBuilder(
                     [
-                        (str(row["problem"]), str(row["solution"]))
+                        (str(row["question"]), str(row["answer"]))
                         for _, row in df.iterrows()
                     ]
                 )
@@ -384,7 +385,7 @@ class GSM8KEvaluator:
                 if b is None:
                     continue
 
-                logger.info(f"Processing batch {idx+1}/{len(batches)}")
+                t_start = time.time()
 
                 result = self.evaluate_batch(b, prompt_builder, cache)
                 results += result
@@ -392,6 +393,8 @@ class GSM8KEvaluator:
                 for r in result:
                     if r["is_correct"]:
                         correct_count += 1
+
+                logger.info(f"Processed batch {idx+1}/{len(batches)} in {round(time.time() - t_start, 3)}")
 
                 # Log progress + cache every 10 batches
                 if (idx + 1) % 10 == 0:

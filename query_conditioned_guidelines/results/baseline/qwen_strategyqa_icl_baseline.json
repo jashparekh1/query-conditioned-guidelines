@@ -1,0 +1,11 @@
+{
+  "total_problems": 687,
+  "correct_answers": 426,
+  "accuracy": 0.6200873362445415,
+  "valid_answers": 687,
+  "answer_rate": 1.0,
+  "model_path": "models/frozen/Qwen2.5-3B-Instruct",
+  "dataset_path": "data/strategyqa/test.parquet",
+  "evaluation_time": "2025-11-14T05:05:20.001810",
+  "device": "cuda"
+}

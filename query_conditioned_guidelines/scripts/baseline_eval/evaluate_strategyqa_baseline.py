@@ -14,10 +14,17 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import re
 from datetime import datetime
+import dotenv
+import math
+import time
+
+from prompt_builder import PromptBuilder, COTPromptBuilder, ICLPromptBuilder
 
 # Add the project root to the path for imports
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
+
+dotenv.load_dotenv()
 
 try:
     import pandas as pd
@@ -69,7 +76,14 @@ class StrategyQAEvaluator:
                 "device_map": "auto" if self.device == "cuda" else None,
             }
             
-            logger.info("Using default attention implementation")
+            # Try to use Flash Attention if available
+            try:
+                import flash_attn
+                if self.device == "cuda":
+                    logger.info("Using Flash Attention 2...")
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+            except ImportError:
+                logger.info("Flash Attention not available, using default attention")
             
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
@@ -90,6 +104,15 @@ class StrategyQAEvaluator:
     def extract_answer(self, text: str) -> Optional[bool]:
         """Extract the boolean answer from model output."""
         text_lower = text.lower().strip()
+
+        # look for explicit yes/no after ####
+        match = re.search(r"####\s*([A-z]+)", text)
+        if match:
+            candidate = match.group(1).strip().lower()
+            if any(word in candidate for word in ['yes', 'true', 'correct', 'right']):
+                return True
+            elif any(word in candidate for word in ['no', 'false', 'incorrect', 'wrong']):
+                return False
         
         # Look for explicit yes/no answers
         if any(word in text_lower for word in ['yes', 'true', 'correct', 'right']):
@@ -135,11 +158,70 @@ class StrategyQAEvaluator:
         except Exception as e:
             logger.error(f"❌ Generation failed: {e}")
             return ""
+
+    def batch_generate_response(self, prompts: list[str], max_new_tokens: int = 512) -> list[str]:
+        """Generate responses for a batch of prompts."""
+        if not self.model or not self.tokenizer:
+            raise ValueError("Model not loaded")
+
+        try:
+
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to(self.device)
+
+            inputs_len = [len(i) for i in inputs]
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=0.0,          # Greedy decoding
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+
+            decoded = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+            # stop sequences
+            stop_words = ["####", "\nQ:", "\nHuman:", "\nUser:", "Q:", "Human:", "User:"]
+
+            cleaned_responses = []
+            for idx, full_text in enumerate(decoded):
+                # Remove the original prompt part
+                prefix_end = full_text.find(prompts[idx])
+                prefix_end = prefix_end + len(prompts[idx]) if prefix_end >= 0 else 0
+                text = full_text[prefix_end+1:].strip()
+
+                # Truncate at the earliest stop word (including '####')
+                stop_positions = [
+                    text.find(sw) for sw in stop_words if sw in text
+                ]
+                if stop_positions:
+                    cutoff = min(p for p in stop_positions if p >= 0)
+                    # Keep up to and slightly past #### if present
+                    if "####" in text[cutoff:cutoff + 50]:
+                        text = text[:cutoff + 50]
+                    else:
+                        text = text[:cutoff]
+
+                cleaned_responses.append(text.strip())
+
+            return cleaned_responses
+
+        except Exception as e:
+            logger.error(f"❌ Batch generation failed: {e}")
+            return ["" for _ in prompts]
     
     def evaluate_single_problem(self, problem_data: Dict[str, Any]) -> Dict[str, Any]:
         """Evaluate a single StrategyQA problem."""
         try:
             # Extract problem information
+            _id = problem_data["qid"]
             question = problem_data['question']
             answer = problem_data['answer']
             term = problem_data['term']
@@ -159,22 +241,25 @@ class StrategyQAEvaluator:
             is_correct = predicted_answer == answer if predicted_answer is not None else False
             
             return {
-                'question': question,
-                'answer': answer,
+                'id': _id,
+                'problem': question,
+                'solution': answer,
                 'term': term,
                 'description': description,
                 'facts': facts,
                 'prompt': prompt,
                 'predicted_answer': predicted_answer,
                 'response': response,
-                'is_correct': is_correct
+                'is_correct': is_correct,
+                'cached': False
             }
             
         except Exception as e:
             logger.error(f"❌ Failed to evaluate problem: {e}")
             return {
-                'question': 'Error',
-                'answer': False,
+                'id': _id,
+                'problem': 'Error',
+                'solution': False,
                 'term': '',
                 'description': '',
                 'facts': '',
@@ -182,64 +267,233 @@ class StrategyQAEvaluator:
                 'predicted_answer': None,
                 'response': '',
                 'is_correct': False,
+                'cached': False,
                 'error': str(e)
             }
+
+    def evaluate_batch(
+        self, 
+        problem_data: list[Dict[str, Any]], 
+        prompt_builder: PromptBuilder,
+        cache: dict,
+    ) -> Dict[str, Any]:
+        """Evaluate a batch of GSM8K problems."""
+        try:
+            # Extract problem information
+            _id = [p["qid"] for p in problem_data]
+            problem = [p["question"] for p in problem_data]
+            solution = [p["answer"] for p in problem_data]
+            term = [p["term"] for p in problem_data]
+            description = [p["description"] for p in problem_data]
+            facts = [p["facts"] for p in problem_data]
+
+            # Create prompt for StrategyQA dataset
+            # prompt = f"Problem: {problem}\n\nSolution:"
+            prompt = [prompt_builder.build_prompt(p, tf=True) for p in problem]
+
+            cached_responses = {}
+            uncached_prompts = []
+            uncached_indices = []
+
+            for idx, p in enumerate(prompt):
+                if p in cache:
+                    cached_responses[idx] = cache[p]
+                else:
+                    uncached_prompts.append(p)
+                    uncached_indices.append(idx)
+
+            # Generate responses for uncached prompts
+            if uncached_prompts:
+                new_responses = self.batch_generate_response(uncached_prompts)
+                # Store in cache
+                for p, r in zip(uncached_prompts, new_responses):
+                    cache[p] = r
+                # Map back to their indices
+                for idx, r in zip(uncached_indices, new_responses):
+                    cached_responses[idx] = r
+
+            # Collect responses in order
+            response = [cached_responses[i] for i in range(len(prompt))]
+
+            # Extract answer
+            predicted_answer = [self.extract_answer(r) for r in response]
+
+            results = []
+            for idx, pa in enumerate(predicted_answer):
+                is_correct = False
+                if pa is not None:
+                    # Normalize both answers for comparison
+                    pred_normalized = str(pa).strip().lower()
+                    sol_normalized = str(solution[idx]).strip().lower()
+
+                    # Check if predicted answer appears in the solution
+                    is_correct = (
+                        pred_normalized in sol_normalized
+                        or sol_normalized in pred_normalized
+                    )
+
+                results.append({
+                    "id": _id,
+                    "problem": problem[idx],
+                    "solution": solution[idx],
+                    "term": term[idx],
+                    "description": description[idx],
+                    "facts": facts[idx],
+                    "prompt": prompt[idx],
+                    "predicted_answer": pa,
+                    "response": response[idx],
+                    "is_correct": is_correct,
+                    "cached": idx in cached_responses
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"❌ Failed to evaluate batch: {e}")
+            return [{
+                "id": _id,
+                "problem": "Error",
+                "term": "",
+                "solution": "",
+                "description": "",
+                "facts": "",
+                "prompt": "",
+                "predicted_answer": None,
+                "response": "",
+                "is_correct": False,
+                "cached": False,
+                "error": str(e),
+            } for p in problem_data]
     
-    def evaluate_dataset(self, dataset_path: str, max_samples: Optional[int] = None) -> Dict[str, Any]:
-        """Evaluate the model on the StrategyQA dataset."""
+    def evaluate_dataset(
+        self,
+        dataset_path: str,
+        cache_path: str,
+        prompt_template: Optional[str] = None,
+        max_samples: Optional[int] = None,
+        batch_size: int = 8
+    ) -> Dict[str, Any]:
+        """Evaluate the model on the CommonsenseQA dataset."""
         try:
             logger.info(f"Loading dataset from: {dataset_path}")
             df = pd.read_parquet(dataset_path)
-            
+
+            logger.info(f"Loading cache from: {cache_path}")
+            with open(cache_path, "w+") as f:
+                cache = {}
+                try:
+                    cache = json.load(f)
+                except:
+                    pass
+
             if max_samples:
                 df = df.head(max_samples)
-                logger.info(f"Evaluating on {max_samples} samples")
-            else:
-                logger.info(f"Evaluating on {len(df)} samples")
-            
+
             results = []
             correct_count = 0
-            
+            cache_count = 0
+
+            if not prompt_template:
+                prompt_builder = PromptBuilder()
+            elif prompt_template == "cot":
+                prompt_builder = COTPromptBuilder()
+            elif prompt_template == "icl":
+                prompt_builder = ICLPromptBuilder(
+                    [
+                        (
+                            str(row["question"]), 
+                            str(row["answer"])
+                        )
+                        for _, row in df.iterrows()
+                    ]
+                )
+            else:
+                prompt_builder = PromptBuilder()
+
+            num_batches = math.ceil(len(df)/float(batch_size))
+            batches = [None]*num_batches # list of lists of problem_data
             for idx, row in df.iterrows():
-                logger.info(f"Processing problem {idx + 1}/{len(df)}")
+                if not batches[int(idx / batch_size)]:
+                    batches[int(idx / batch_size)] = []
+                batches[int(idx / batch_size)].append(row.to_dict())
+            logger.info(f"Evaluating on {len(df)} samples in {num_batches} batches of size {batch_size}")
                 
-                result = self.evaluate_single_problem(row.to_dict())
-                results.append(result)
-                
-                if result['is_correct']:
-                    correct_count += 1
-                
-                # Log progress every 10 problems
+
+            for idx, b in enumerate(batches):
+
+                if b is None:
+                    continue
+
+                t_start = time.time()
+
+                result = self.evaluate_batch(b, prompt_builder, cache)
+                results += result
+
+                for r in result:
+                    if r["is_correct"]:
+                        correct_count += 1
+                    if r["cached"]:
+                        cache_count += 1
+
+                logger.info(f"Processed batch {idx+1}/{len(batches)} in {round(time.time() - t_start, 3)}")
+
+                # Log progress + cache every 10 batches
                 if (idx + 1) % 10 == 0:
-                    current_accuracy = correct_count / (idx + 1)
-                    logger.info(f"Current accuracy: {current_accuracy:.3f} ({correct_count}/{idx + 1})")
-            
+                    current_accuracy = correct_count / len(results)
+                    cache_hit_rate = cache_count / len(results)
+                    logger.info(
+                        f"Current accuracy: {current_accuracy:.3f} ({correct_count}/{len(results)})"
+                    )
+                    logger.info(
+                        f"Cache hit rate: {cache_hit_rate:.3f} ({cache_count}/{len(results)})"
+                    )
+
+                    if cache_path is not None:
+                        with open(cache_path, "w") as f:
+                            json.dump(cache , f)
+                        logger.info(f"Cached batches 1-{idx+1}")
+
+            if cache_path is not None:
+                with open(cache_path, "w+") as f:
+                    json.dump(cache , f)
+                logger.info(f"Cached all responses")
+
+
             # Calculate final metrics
             total_problems = len(results)
             accuracy = correct_count / total_problems if total_problems > 0 else 0
-            
+
             # Count problems with valid answers
-            valid_answers = sum(1 for r in results if r['predicted_answer'] is not None)
+            valid_answers = sum(1 for r in results if r["predicted_answer"] is not None)
             answer_rate = valid_answers / total_problems if total_problems > 0 else 0
-            
+
             evaluation_results = {
-                'total_problems': total_problems,
-                'correct_answers': correct_count,
-                'accuracy': accuracy,
-                'valid_answers': valid_answers,
-                'answer_rate': answer_rate,
-                'results': results,
-                'model_path': str(self.model_path),
-                'dataset_path': dataset_path,
-                'evaluation_time': datetime.now().isoformat(),
-                'device': self.device
+                "total_problems": total_problems,
+                "correct_answers": correct_count,
+                "accuracy": accuracy,
+                "valid_answers": valid_answers,
+                "answer_rate": answer_rate,
+                "results": results,
+                "model_path": str(self.model_path),
+                "dataset_path": dataset_path,
+                "evaluation_time": datetime.now().isoformat(),
+                "device": self.device,
             }
-            
+
             logger.info(f"✓ Evaluation completed!")
-            logger.info(f"✓ Accuracy: {accuracy:.3f} ({correct_count}/{total_problems})")
-            logger.info(f"✓ Answer rate: {answer_rate:.3f} ({valid_answers}/{total_problems})")
-            
+            logger.info(
+                f"✓ Accuracy: {accuracy:.3f} ({correct_count}/{total_problems})"
+            )
+            logger.info(
+                f"✓ Answer rate: {answer_rate:.3f} ({valid_answers}/{total_problems})"
+            )
+
             return evaluation_results
+
+        except Exception as e:
+            logger.error(f"❌ Dataset evaluation failed: {e}")
+            logger.error(traceback.format_exc())
+            return {"error": str(e)}
             
         except Exception as e:
             logger.error(f"❌ Dataset evaluation failed: {e}")
@@ -293,6 +547,22 @@ def main():
     parser.add_argument('--device', type=str, default='auto',
                        choices=['auto', 'cuda', 'cpu'],
                        help='Device to use for inference')
+    parser.add_argument(
+        "--prompt_template",
+        type=str,
+        default=None,
+        choices=[None, "cot", "icl"],
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--cache_path",
+        type=str,
+        default=None
+    )
     
     args = parser.parse_args()
     
@@ -327,7 +597,13 @@ def main():
     
     # Run evaluation
     print(f"\n2. Running Evaluation...")
-    results = evaluator.evaluate_dataset(args.dataset_path, args.max_samples)
+    results = evaluator.evaluate_dataset(
+        args.dataset_path, 
+        args.cache_path, 
+        prompt_template=args.prompt_template, 
+        max_samples=args.max_samples,
+        batch_size=args.batch_size
+    )
     
     if 'error' in results:
         print(f"❌ Evaluation failed: {results['error']}")
