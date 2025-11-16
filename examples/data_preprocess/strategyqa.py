@@ -40,7 +40,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", default=None, help="The save directory for the preprocessed dataset.")
     parser.add_argument("--hdfs_dir", default=None)
-    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/strategyqa", help="The local path to the raw dataset, if it exists.")
+    parser.add_argument("--local_dataset_path", default="../../data/strategyqa", help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
         "--local_save_dir", default="~/data/strategyqa", help="The save directory for the preprocessed dataset."
     )
