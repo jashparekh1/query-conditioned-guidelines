@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Preprocess the GSM8k dataset to parquet format
+Preprocess the MATH dataset to parquet format
 """
 
 import argparse
@@ -24,43 +24,58 @@ import shutil
 import datasets
 
 
-def extract_solution(solution_str):
-    solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-    assert solution is not None
-    final_solution = solution.group(0)
-    final_solution = final_solution.split("#### ")[1].replace(",", "")
-    return final_solution
+def extract_boxed_answer(solution_str):
+    """Extract the final answer from \\boxed{} notation."""
+    # Try to find the last \boxed{} in the solution
+    matches = re.findall(r'\\boxed\{([^}]*)\}', solution_str)
+    if matches:
+        return matches[-1]  # Return the last boxed answer
+    return solution_str.strip()
 
 
-SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a given problem.
-Your goal is not to answer the question directly, but to produce a high-quality, explicit plan that guides another model to solve it.
+SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a challenging mathematics problem.
+Your goal is not to solve the problem directly, but to produce a high-quality, explicit plan that guides another model to solve it.
 Each plan should:
-1. Analyze what the problem is asking.
-2. Identify the required knowledge, sub-tasks, or reasoning steps.
-3. Provide a structured outline or set of instructions to follow.
+1. Analyze what the problem is asking and identify the key mathematical concepts involved.
+2. Break down the problem into manageable sub-problems or steps.
+3. Identify the mathematical techniques, formulas, or theorems that might be useful.
+4. Provide a structured outline of the solution approach.
+5. Highlight any potential pitfalls or special cases to consider.
 
-Format your output as a concise, ordered list of reasoning steps or directives. Avoid giving the final answer."""
+Format your output as a concise, ordered list of reasoning steps or directives. Avoid giving the final answer or complete solution."""
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", default=None, help="The save directory for the preprocessed dataset.")
     parser.add_argument("--hdfs_dir", default=None)
-    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/gsm8k", help="The local path to the raw dataset, if it exists.")
+    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/math", help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="~/data/gsm8k", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="~/data/math", help="The save directory for the preprocessed dataset."
     )
 
     args = parser.parse_args()
     local_dataset_path = args.local_dataset_path
 
-    data_source = "guidelines"
+    data_source = "math"
 
-    ac_data_source = "/shared/data2/jiashuo5/verl/data/gsm8k"
-    
     if local_dataset_path is not None:
         dataset = datasets.load_from_disk(local_dataset_path)
     else:
-        dataset = datasets.load_dataset(ac_data_source, "main")
+        # If loading from scratch, need to load and combine all categories
+        from datasets import DatasetDict, concatenate_datasets
+        categories = ['algebra', 'counting_and_probability', 'geometry', 'intermediate_algebra', 
+                      'number_theory', 'prealgebra', 'precalculus']
+        all_train = []
+        all_test = []
+        for category in categories:
+            ds = datasets.load_dataset('EleutherAI/hendrycks_math', category)
+            all_train.append(ds['train'])
+            all_test.append(ds['test'])
+        dataset = DatasetDict({
+            'train': concatenate_datasets(all_train),
+            'test': concatenate_datasets(all_test)
+        })
 
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
@@ -68,12 +83,16 @@ if __name__ == "__main__":
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
         def process_fn(example, idx):
-            question_raw = example.pop("question")
+            problem_raw = example["problem"]
+            solution_raw = example["solution"]
+            level = example.get("level", "")
+            problem_type = example.get("type", "")
 
-            question = SYSTEM_PROMPT + "\n\n" + "Question: " + question_raw
+            question = SYSTEM_PROMPT + "\n\n" + "Problem: " + problem_raw
 
-            answer_raw = example.pop("answer")
-            solution = extract_solution(answer_raw)
+            # Extract the final answer
+            final_answer = extract_boxed_answer(solution_raw)
+            
             data = {
                 "data_source": data_source,
                 "prompt": [
@@ -82,13 +101,15 @@ if __name__ == "__main__":
                         "content": question,
                     }
                 ],
-                "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": solution},
+                "ability": "advanced_math",
+                "reward_model": {"style": "rule", "ground_truth": final_answer},
                 "extra_info": {
                     "split": split,
                     "index": idx,
-                    "answer": answer_raw,
-                    "question": question_raw,
+                    "problem": problem_raw,
+                    "solution": solution_raw,
+                    "level": level,
+                    "type": problem_type,
                 },
             }
             return data
@@ -126,3 +147,4 @@ if __name__ == "__main__":
         if os.path.exists(hdfs_dir):
             shutil.rmtree(hdfs_dir)
         shutil.copytree(local_save_dir, hdfs_dir)
+

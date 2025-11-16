@@ -12,55 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Preprocess the GSM8k dataset to parquet format
+Preprocess the StrategyQA dataset to parquet format
 """
 
 import argparse
 import os
-import re
 import json
 import shutil
 
 import datasets
 
 
-def extract_solution(solution_str):
-    solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-    assert solution is not None
-    final_solution = solution.group(0)
-    final_solution = final_solution.split("#### ")[1].replace(",", "")
-    return final_solution
-
-
-SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a given problem.
+SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for answering a strategic reasoning question.
 Your goal is not to answer the question directly, but to produce a high-quality, explicit plan that guides another model to solve it.
+These questions require implicit multi-hop reasoning and the ability to connect facts that are not explicitly stated.
 Each plan should:
-1. Analyze what the problem is asking.
-2. Identify the required knowledge, sub-tasks, or reasoning steps.
-3. Provide a structured outline or set of instructions to follow.
+1. Analyze what the question is asking and what implicit knowledge is required.
+2. Break down the question into component facts or sub-questions that need to be verified.
+3. Identify the reasoning strategy needed to connect these facts.
+4. Provide a structured approach to reach a yes/no conclusion.
+5. Consider potential edge cases or alternative interpretations.
 
 Format your output as a concise, ordered list of reasoning steps or directives. Avoid giving the final answer."""
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", default=None, help="The save directory for the preprocessed dataset.")
     parser.add_argument("--hdfs_dir", default=None)
-    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/gsm8k", help="The local path to the raw dataset, if it exists.")
+    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/strategyqa", help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="~/data/gsm8k", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="~/data/strategyqa", help="The save directory for the preprocessed dataset."
     )
 
     args = parser.parse_args()
     local_dataset_path = args.local_dataset_path
 
-    data_source = "guidelines"
+    data_source = "strategyqa"
 
-    ac_data_source = "/shared/data2/jiashuo5/verl/data/gsm8k"
-    
     if local_dataset_path is not None:
         dataset = datasets.load_from_disk(local_dataset_path)
     else:
-        dataset = datasets.load_dataset(ac_data_source, "main")
+        dataset = datasets.load_dataset("ChilleD/StrategyQA")
 
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
@@ -68,12 +61,14 @@ if __name__ == "__main__":
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
         def process_fn(example, idx):
-            question_raw = example.pop("question")
+            question_raw = example["question"]
+            answer = example["answer"]
+            
+            # Convert boolean to string
+            answer_str = "Yes" if answer else "No"
+            
+            question = SYSTEM_PROMPT + "\n\n" + "Question: " + question_raw + "\n\nAnswer with Yes or No."
 
-            question = SYSTEM_PROMPT + "\n\n" + "Question: " + question_raw
-
-            answer_raw = example.pop("answer")
-            solution = extract_solution(answer_raw)
             data = {
                 "data_source": data_source,
                 "prompt": [
@@ -82,13 +77,17 @@ if __name__ == "__main__":
                         "content": question,
                     }
                 ],
-                "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": solution},
+                "ability": "strategic_reasoning",
+                "reward_model": {"style": "rule", "ground_truth": answer_str},
                 "extra_info": {
                     "split": split,
                     "index": idx,
-                    "answer": answer_raw,
                     "question": question_raw,
+                    "answer": answer,
+                    "qid": example.get("qid", f"{split}_{idx}"),
+                    "term": example.get("term", ""),
+                    "description": example.get("description", ""),
+                    "facts": example.get("facts", "")
                 },
             }
             return data
@@ -126,3 +125,4 @@ if __name__ == "__main__":
         if os.path.exists(hdfs_dir):
             shutil.rmtree(hdfs_dir)
         shutil.copytree(local_save_dir, hdfs_dir)
+

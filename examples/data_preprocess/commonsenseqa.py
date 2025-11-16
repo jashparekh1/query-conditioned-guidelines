@@ -12,68 +12,73 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Preprocess the GSM8k dataset to parquet format
+Preprocess the CommonsenseQA dataset to parquet format
 """
 
 import argparse
 import os
-import re
 import json
 import shutil
 
 import datasets
 
 
-def extract_solution(solution_str):
-    solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
-    assert solution is not None
-    final_solution = solution.group(0)
-    final_solution = final_solution.split("#### ")[1].replace(",", "")
-    return final_solution
-
-
-SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a given problem.
+SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a commonsense reasoning question.
 Your goal is not to answer the question directly, but to produce a high-quality, explicit plan that guides another model to solve it.
 Each plan should:
-1. Analyze what the problem is asking.
-2. Identify the required knowledge, sub-tasks, or reasoning steps.
-3. Provide a structured outline or set of instructions to follow.
+1. Analyze what the question is asking and what commonsense knowledge is required.
+2. Identify the key concepts and relationships between the answer choices.
+3. Provide a structured reasoning process to evaluate each option.
+4. Guide the model to select the most appropriate answer based on commonsense reasoning.
 
 Format your output as a concise, ordered list of reasoning steps or directives. Avoid giving the final answer."""
+
+
+def format_choices(choices):
+    """Format the multiple choice options into a readable string."""
+    labels = choices['label']
+    texts = choices['text']
+    formatted = []
+    for label, text in zip(labels, texts):
+        formatted.append(f"({label}) {text}")
+    return "\n".join(formatted)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--local_dir", default=None, help="The save directory for the preprocessed dataset.")
     parser.add_argument("--hdfs_dir", default=None)
-    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/gsm8k", help="The local path to the raw dataset, if it exists.")
+    parser.add_argument("--local_dataset_path", default="/shared/nas2/heng6/course/query-conditioned-guidelines/data/commonsenseqa", help="The local path to the raw dataset, if it exists.")
     parser.add_argument(
-        "--local_save_dir", default="~/data/gsm8k", help="The save directory for the preprocessed dataset."
+        "--local_save_dir", default="~/data/commonsenseqa", help="The save directory for the preprocessed dataset."
     )
 
     args = parser.parse_args()
     local_dataset_path = args.local_dataset_path
 
-    data_source = "guidelines"
+    data_source = "commonsenseqa"
 
-    ac_data_source = "/shared/data2/jiashuo5/verl/data/gsm8k"
-    
     if local_dataset_path is not None:
         dataset = datasets.load_from_disk(local_dataset_path)
     else:
-        dataset = datasets.load_dataset(ac_data_source, "main")
+        dataset = datasets.load_dataset("tau/commonsense_qa")
 
     train_dataset = dataset["train"]
+    # CommonsenseQA has validation and test splits
+    validation_dataset = dataset["validation"]
     test_dataset = dataset["test"]
 
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
         def process_fn(example, idx):
-            question_raw = example.pop("question")
+            question_raw = example["question"]
+            choices_raw = example["choices"]
+            answer_key = example["answerKey"]
+            
+            # Format the question with choices
+            choices_formatted = format_choices(choices_raw)
+            question = SYSTEM_PROMPT + "\n\n" + "Question: " + question_raw + "\n\nAnswer Choices:\n" + choices_formatted
 
-            question = SYSTEM_PROMPT + "\n\n" + "Question: " + question_raw
-
-            answer_raw = example.pop("answer")
-            solution = extract_solution(answer_raw)
             data = {
                 "data_source": data_source,
                 "prompt": [
@@ -82,13 +87,16 @@ if __name__ == "__main__":
                         "content": question,
                     }
                 ],
-                "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": solution},
+                "ability": "commonsense_reasoning",
+                "reward_model": {"style": "rule", "ground_truth": answer_key},
                 "extra_info": {
                     "split": split,
                     "index": idx,
-                    "answer": answer_raw,
                     "question": question_raw,
+                    "choices": choices_raw,
+                    "answer_key": answer_key,
+                    "id": example.get("id", f"{split}_{idx}"),
+                    "question_concept": example.get("question_concept", "")
                 },
             }
             return data
@@ -96,6 +104,7 @@ if __name__ == "__main__":
         return process_fn
 
     train_dataset = train_dataset.map(function=make_map_fn("train"), with_indices=True)
+    validation_dataset = validation_dataset.map(function=make_map_fn("validation"), with_indices=True)
     test_dataset = test_dataset.map(function=make_map_fn("test"), with_indices=True)
 
     hdfs_dir = args.hdfs_dir
@@ -110,11 +119,13 @@ if __name__ == "__main__":
     os.makedirs(local_save_dir, exist_ok=True)
 
     train_dataset.to_parquet(os.path.join(local_save_dir, "train.parquet"))
+    validation_dataset.to_parquet(os.path.join(local_save_dir, "validation.parquet"))
     test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
 
-    # Save both datasets into a single JSON file
+    # Save all datasets into a single JSON file
     combined_output = {
         "train": list(train_dataset),
+        "validation": list(validation_dataset),
         "test": list(test_dataset),
     }
     with open(os.path.join(local_save_dir, "dataset.json"), "w", encoding="utf-8") as f:
@@ -126,3 +137,4 @@ if __name__ == "__main__":
         if os.path.exists(hdfs_dir):
             shutil.rmtree(hdfs_dir)
         shutil.copytree(local_save_dir, hdfs_dir)
+
