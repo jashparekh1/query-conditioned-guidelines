@@ -14,14 +14,14 @@ class PromptBuilder:
         elif tf:
             return self.build_prompt_tf(problem)
 
-        return f"Problem: {problem}\n\nSolution:"
+        return f"Finish your answer with \"#### <answer>\". Do not include anything after that.\n\nProblem: {problem}\n\nSolution:"
 
     def build_prompt_choices(self, problem, choices):
         choices_str = '\n'.join([c[0] + ': ' + c[1] for c in choices])
-        return f"Problem: {problem}\n\nAnswer Choices:\n{choices_str}\n\nSolution:"
+        return f"Finish your answer with \"#### <answer>\". Do not include anything after that.\n\nProblem: {problem}\n\nAnswer Choices:\n{choices_str}\n\nSolution:"
 
     def build_prompt_tf(self, problem):
-        return f"Problem: {problem}\n\nAnswer with either True or False.\n\nSolution:"
+        return f"Finish your answer with \"#### <answer>\". Do not include anything after that.\n\nProblem: {problem}\n\nAnswer with either True or False.\n\nSolution:"
 
 
 class COTPromptBuilder(PromptBuilder):
@@ -78,7 +78,7 @@ class ICLPromptBuilder(PromptBuilder):
     def get_examples(self, problem):
         rng = np.random.default_rng(int(hashlib.sha256(problem.encode("utf-8")).hexdigest(), 16) % (2**32))
         examples = list(filter(lambda x: x[0] != problem, self.examples))
-        return list(np.array(examples)[rng.choice(len(examples), self.n, replace=False)])
+        return list(np.array(examples, dtype=object)[rng.choice(len(examples), self.n, replace=False)])
 
     def build_prompt(self, problem: str, choices: Optional[list] = None, tf: bool = False) -> str:
         """
@@ -105,7 +105,6 @@ class ICLPromptBuilder(PromptBuilder):
 
     def build_prompt_choices(self, problem, choices):
         examples = self.get_examples(problem)
-
         prompt = "Here are some examples of questions and their answers:\n\n"
         for ex_question, ex_choices, ex_answer in examples:
             choices_str = ', '.join([c[0] + ': ' + c[1] for c in ex_choices])

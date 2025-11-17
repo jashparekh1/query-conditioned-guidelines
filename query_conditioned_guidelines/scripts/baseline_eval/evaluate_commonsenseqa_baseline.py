@@ -117,7 +117,7 @@ class CommonsenseQAEvaluator:
         # Look for the choice text in the response
         text_lower = text.lower()
         for i, choice in enumerate(choices):
-            if choice.lower() in text_lower:
+            if choice[1].lower() in text_lower:
                 return chr(ord('A') + i)  # Convert to letter
         
         return None
@@ -211,7 +211,7 @@ class CommonsenseQAEvaluator:
             # Extract problem information
             _id = problem_data['id']
             question = problem_data['question']
-            choices = zip(problem_data["choices"]["label"].tolist(), problem_data["choices"]["text"].tolist())
+            choices = list(zip(problem_data["choices"]["label"].tolist(), problem_data["choices"]["text"].tolist()))
             answer_key = problem_data['answerKey']
             question_concept = problem_data['question_concept']
             
@@ -231,6 +231,7 @@ class CommonsenseQAEvaluator:
             return {
                 'id': _id,
                 'problem': question,
+                'labels': [c[0] for c in choices],
                 'choices': [c[1] for c in choices],
                 'solution': answer_key,
                 'question_concept': question_concept,
@@ -245,6 +246,7 @@ class CommonsenseQAEvaluator:
             return {
                 'id': _id,
                 'problem': 'Error',
+                'labels': [],
                 'choices': [],
                 'solution': '',
                 'question_concept': '',
@@ -266,7 +268,7 @@ class CommonsenseQAEvaluator:
             # Extract problem information
             _id = [p["id"] for p in problem_data]
             problem = [p["question"] for p in problem_data]
-            choices = [zip(p["choices"]["label"].tolist(), p["choices"]["text"].tolist()) for p in problem_data]
+            choices = [list(zip(p["choices"]["label"].tolist(), p["choices"]["text"].tolist())) for p in problem_data]
             solution = [p["answerKey"] for p in problem_data]
             question_concept = [p["question_concept"] for p in problem_data]
 
@@ -299,7 +301,7 @@ class CommonsenseQAEvaluator:
             response = [cached_responses[i] for i in range(len(prompt))]
 
             # Extract answer
-            predicted_answer = [self.extract_answer(r) for r in response]
+            predicted_answer = [self.extract_answer(r, c) for r, c in zip(response, choices)]
 
             results = []
             for idx, pa in enumerate(predicted_answer):
@@ -318,9 +320,10 @@ class CommonsenseQAEvaluator:
                 results.append({
                     "id": _id,
                     "problem": problem[idx],
+                    "labels": [c[0] for c in choices[idx]],
                     "choices": [c[1] for c in choices[idx]],
                     "solution": solution[idx],
-                    "question_concept": question_concept[idx]
+                    "question_concept": question_concept[idx],
                     "prompt": prompt[idx],
                     "predicted_answer": pa,
                     "response": response[idx],
@@ -334,9 +337,10 @@ class CommonsenseQAEvaluator:
             return [{
                 "id": _id,
                 "problem": "Error",
+                "labels": [],
                 "choices": [],
                 "solution": "",
-                "question_concept": ""
+                "question_concept": "",
                 "prompt": "",
                 "predicted_answer": None,
                 "response": "",
@@ -380,7 +384,7 @@ class CommonsenseQAEvaluator:
                     [
                         (
                             str(row["question"]), 
-                            zip(row["choices"]["label"].tolist(), row["choices"]["text"].tolist()), 
+                            list(zip(row["choices"]["label"].tolist(), row["choices"]["text"].tolist())), 
                             str(row["answerKey"])
                         )
                         for _, row in df.iterrows()
