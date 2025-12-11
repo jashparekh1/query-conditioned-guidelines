@@ -68,7 +68,20 @@ except ImportError:
 
 from tqdm import tqdm
 
-from verl.utils import hf_processor, hf_tokenizer
+# Import directly from tokenizer module to avoid verl.__init__ importing ray
+import sys
+import os
+verl_utils_path = os.path.join(os.path.dirname(__file__), '..', 'verl', 'utils', 'tokenizer.py')
+if os.path.exists(verl_utils_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("verl_tokenizer", verl_utils_path)
+    verl_tokenizer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verl_tokenizer)
+    hf_processor = verl_tokenizer.hf_processor
+    hf_tokenizer = verl_tokenizer.hf_tokenizer
+else:
+    # Fallback to normal import
+    from verl.utils import hf_processor, hf_tokenizer
 
 
 @dataclass
@@ -218,14 +231,37 @@ class BaseModelMerger(ABC):
         del state_dict
         del model
 
-        processor = hf_processor(self.hf_model_config_path)
-        tokenizer = hf_tokenizer(self.hf_model_config_path)
-        if processor is not None:
-            print(f"Saving processor to {self.config.target_dir}")
-            processor.save_pretrained(self.config.target_dir)
-        if tokenizer is not None:
-            print(f"Saving tokenizer to {self.config.target_dir}")
-            tokenizer.save_pretrained(self.config.target_dir)
+        # Try to load tokenizer, but if it fails, copy files directly
+        try:
+            processor = hf_processor(self.hf_model_config_path, trust_remote_code=True)
+            tokenizer = hf_tokenizer(self.hf_model_config_path, trust_remote_code=True)
+            if processor is not None:
+                print(f"Saving processor to {self.config.target_dir}")
+                processor.save_pretrained(self.config.target_dir)
+            if tokenizer is not None:
+                print(f"Saving tokenizer to {self.config.target_dir}")
+                tokenizer.save_pretrained(self.config.target_dir)
+        except Exception as e:
+            print(f"Warning: Failed to load tokenizer via transformers ({e}), copying files directly...")
+            import shutil
+            import glob
+            hf_dir = Path(self.hf_model_config_path)
+            if hf_dir.exists():
+                # Copy config files first (needed for tokenizer to work properly)
+                for config_file in ['config.json', 'generation_config.json']:
+                    src_config = hf_dir / config_file
+                    if src_config.exists():
+                        dst_config = Path(self.config.target_dir) / config_file
+                        shutil.copy2(src_config, dst_config)
+                        print(f"Copied {config_file} to {dst_config}")
+                
+                # Copy all tokenizer-related files
+                for pattern in ['tokenizer*.json', 'vocab.json', 'merges.txt', 'special_tokens_map.json', 'added_tokens.json', '*.jinja']:
+                    for src_file in glob.glob(str(hf_dir / pattern)):
+                        dst_file = Path(self.config.target_dir) / Path(src_file).name
+                        shutil.copy2(src_file, dst_file)
+                        print(f"Copied {Path(src_file).name} to {dst_file}")
+                print("✓ Tokenizer and config files copied directly")
 
     def upload_to_huggingface(self):
         from huggingface_hub import HfApi

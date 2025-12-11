@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-MODEL_PATH=${MODEL_PATH:-"/shared/data3/xzhong23/models/Qwen2.5-3B-Instruct"}
+MODEL_PATH=${MODEL_PATH:-"/shared/data3/xzhong23/models/Qwen2.5-1.5B-Instruct"}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-2,3}
 PORT=${PORT:-1225}
 MODEL_NAME=${MODEL_NAME:-base-llm}

@@ -1,12 +1,36 @@
+"""
+Reward function for query-conditioned guidelines
+Three components: accuracy (EM) + format compliance + brevity
+
+Using TRUE OFFLINE VLLM MODE:
+- Load model once with vllm.LLM (no separate server)
+- Batch inference directly with llm.generate()
+- No HTTP/API overhead
+"""
+
 import re
+import os
+import multiprocessing
+from typing import Dict, List, Any, Optional
 
+# CRITICAL: Set environment variables BEFORE importing vllm
+# Force VLLM to use spawn multiprocessing method
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
+
+# Set multiprocessing start method to 'spawn' before any CUDA initialization
+# This fixes "Cannot re-initialize CUDA in forked subprocess" error
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    # Already set, ignore
+    pass
+
+from vllm import LLM, SamplingParams
 from mathruler.grader import extract_boxed_content, grade_answer
-from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://127.0.0.1:1225/v1",
-    api_key="EMPTY",
-)
+# Global LLM instance - initialized once in offline mode
+_llm_instance: Optional[LLM] = None
+_sampling_params: Optional[SamplingParams] = None
 
 SYSTEM_PROMPT = """You are a careful and disciplined problem solver that follows a given guideline to reason step by step and produce the final answer.
 
@@ -30,37 +54,298 @@ Your detailed internal reasoning process, including any calculations, logic, or 
 \\boxed{your final answer here}"""
 
 
-
-
-def format_reward(predict_str: str) -> float:
-    pattern = re.compile(r"<think>.*</think>.*\\boxed\{.*\}.*", re.DOTALL)
-    match_result = re.fullmatch(pattern, predict_str)
+def format_reward(solver_output: str) -> float:
+    """
+    Check if SOLVER output (not guideline) has proper format:
+    <think>...</think> and \\boxed{...}
+    """
+    pattern = re.compile(r"<think>.*</think>.*\\boxed\{.*\}", re.DOTALL)
+    match_result = re.fullmatch(pattern, solver_output.strip())
     return 1.0 if match_result else 0.0
 
 
-def acc_reward(predict_str: str, ground_truth: str, use_boxed: bool = True) -> float:
+def acc_reward(solver_output: str, ground_truth: str, use_boxed: bool = True) -> float:
+    """
+    Check if solver's answer matches ground truth
+    """
     if use_boxed:
-        answer = extract_boxed_content(predict_str)
+        answer = extract_boxed_content(solver_output)
     else:
-        answer = predict_str
+        answer = solver_output
     return 1.0 if grade_answer(answer, ground_truth) else 0.0
 
 
-def compute_score(predict_str: str, ground_truth: str, use_boxed: bool = True, format_score: float = 0.1, extra_info: dict = None) -> float:
-    completion = client.chat.completions.create(
-        model="Qwen2.5-3B-Instruct",
-        messages=[
-            {
-            "role": "user",
-            "content": SYSTEM_PROMPT + "\n\n" + "Question: " + extra_info["question"] + "\n\n" + "Guideline: " + predict_str
-            }
-        ],
-        temperature=1.0,      # 0.0~1.2 常用，越低越稳，越高越有创造性
-        max_tokens=2048        # 本次回复最多生成的 token 数
-    )
-    predict_str_solver = completion.choices[0].message.content
+def length_reward(guideline: str, tau: float = 50.0) -> float:
+    """
+    Brevity reward: 1 / (1 + |g|/tau)
+    Encourages shorter, more concise guidelines
+    """
+    num_tokens = len(guideline.split())
+    return 1.0 / (1.0 + num_tokens / tau)
+
+
+def init_offline_llm(
+    model_path: str = "Qwen/Qwen2.5-1.5B-Instruct",
+    tensor_parallel_size: int = 1,
+    gpu_memory_utilization: float = 0.9,
+    max_model_len: int = 8192,
+    dtype: str = "float16",
+    **kwargs
+) -> LLM:
+    """
+    Initialize the LLM in TRUE OFFLINE MODE using vllm.LLM.
+    Load model once, reuse for all inference.
     
+    Args:
+        model_path: HuggingFace model path or local path
+        tensor_parallel_size: Number of GPUs for tensor parallelism
+        gpu_memory_utilization: Fraction of GPU memory to use
+        max_model_len: Maximum sequence length
+        dtype: Data type for model weights
+        **kwargs: Additional arguments passed to vllm.LLM
+        
+    Returns:
+        LLM instance
+    """
+    global _llm_instance, _sampling_params
     
-    return (1.0 - format_score) * acc_reward(predict_str_solver, ground_truth, use_boxed) + format_score * format_reward(
-        predict_str
-    )
+    if _llm_instance is None:
+        print(f"[OFFLINE VLLM] Initializing LLM with model: {model_path}")
+        print(f"[OFFLINE VLLM] Config: tp={tensor_parallel_size}, gpu_mem={gpu_memory_utilization}, dtype={dtype}")
+        
+        _llm_instance = LLM(
+            model=model_path,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            dtype=dtype,
+            trust_remote_code=True,
+            enforce_eager=True,  # Disable CUDA graphs for compatibility
+            **kwargs
+        )
+        
+        # Initialize sampling params (greedy decoding for consistency)
+        _sampling_params = SamplingParams(
+            temperature=0.0,
+            max_tokens=2048,
+            top_p=1.0,
+        )
+        
+        print(f"[OFFLINE VLLM] ✓ Model loaded successfully")
+    
+    return _llm_instance
+
+
+def get_llm() -> LLM:
+    """
+    Get the global LLM instance.
+    Initializes with default settings if not already initialized.
+    
+    Returns:
+        LLM instance
+    """
+    global _llm_instance
+    if _llm_instance is None:
+        return init_offline_llm()
+    return _llm_instance
+
+
+def get_sampling_params() -> SamplingParams:
+    """
+    Get the global sampling params.
+    
+    Returns:
+        SamplingParams instance
+    """
+    global _sampling_params
+    if _sampling_params is None:
+        # Initialize LLM which will also set sampling params
+        init_offline_llm()
+    return _sampling_params
+
+
+def call_solver(guideline: str, question: str) -> str:
+    """
+    Call frozen solver directly using OFFLINE VLLM.
+    No server, no HTTP - direct inference with loaded model.
+    
+    Args:
+        guideline: Generated guideline from policy
+        question: Math question to solve
+        
+    Returns:
+        Solver's complete output
+    """
+    llm = get_llm()
+    sampling_params = get_sampling_params()
+    
+    # Format prompt with system instructions, question, and guideline
+    prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {question}\n\nGuideline: {guideline}"
+    
+    try:
+        # Direct batch inference (even for single item, vllm optimizes internally)
+        outputs = llm.generate([prompt], sampling_params, use_tqdm=False)
+        
+        if outputs and len(outputs) > 0:
+            generated_text = outputs[0].outputs[0].text
+            return generated_text
+        else:
+            print(f"[OFFLINE VLLM] Warning: Empty output from model")
+            return ""
+            
+    except Exception as e:
+        print(f"[OFFLINE VLLM] Error during inference: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+
+def compute_score(
+    predict_str: str,      # This is the GUIDELINE generated by policy
+    ground_truth: str,     # Ground truth answer
+    use_boxed: bool = True,
+    alpha_acc: float = 1.0,
+    alpha_fmt: float = 0.3,
+    alpha_len: float = 0.0,  # Set to 0 to disable length penalty
+    extra_info: dict = None
+) -> float:
+    """
+    Compute composite reward for a single guideline
+    
+    Args:
+        predict_str: Generated guideline (from policy)
+        ground_truth: Correct answer
+        extra_info: Dict with 'question' key
+        
+    Returns:
+        Composite reward: alpha_acc * acc + alpha_fmt * format + alpha_len * length
+    """
+    if extra_info is None or 'question' not in extra_info:
+        if not hasattr(compute_score, '_warned_missing_question'):
+            print(f"ERROR: extra_info missing 'question' field. extra_info keys: {list(extra_info.keys()) if extra_info else 'None'}")
+            compute_score._warned_missing_question = True
+        return 0.0
+    
+    question = extra_info['question']
+    guideline = predict_str
+    
+    # Call frozen solver with guideline + question
+    solver_output = call_solver(guideline, question)
+    
+    if not solver_output:
+        if not hasattr(compute_score, '_warned_api_fail'):
+            print(f"ERROR: Solver API call failed. Guideline: {guideline[:100]}... Question: {question[:100]}...")
+            compute_score._warned_api_fail = True
+        return 0.0  # API call failed
+    
+    # Compute reward components
+    r_acc = acc_reward(solver_output, ground_truth, use_boxed)
+    r_fmt = format_reward(solver_output)  # Check SOLVER output, not guideline
+    r_len = length_reward(guideline)      # Check guideline length
+    
+    # Composite reward
+    total_reward = alpha_acc * r_acc + alpha_fmt * r_fmt + alpha_len * r_len
+    
+    # Log for debugging (first few examples)
+    if extra_info.get('log', False):
+        print(f"\n{'='*60}")
+        print(f"Question: {question[:100]}...")
+        print(f"Guideline ({len(guideline.split())} tokens): {guideline[:150]}...")
+        print(f"Solver output: {solver_output[:200]}...")
+        print(f"Ground truth: {ground_truth}")
+        print(f"Rewards -> Acc: {r_acc:.2f} | Format: {r_fmt:.2f} | Length: {r_len:.2f} | Total: {total_reward:.3f}")
+        print(f"{'='*60}\n")
+    
+    # Always log first 10 rewards to debug
+    if not hasattr(compute_score, '_log_count'):
+        compute_score._log_count = 0
+    if compute_score._log_count < 10:
+        print(f"[REWARD DEBUG {compute_score._log_count}] Total reward: {total_reward:.4f} (Acc: {r_acc:.2f}, Fmt: {r_fmt:.2f}, Len: {r_len:.2f})")
+        print(f"  Guideline: {guideline[:80]}...")
+        print(f"  Question: {question[:80]}...")
+        print(f"  Solver output: {solver_output[:80]}...")
+        compute_score._log_count += 1
+    
+    return total_reward
+
+
+# VERL interface wrapper - optimized for TRUE batch inference
+def compute_rewards_batch(
+    guidelines: List[str],
+    questions: List[str],
+    ground_truths: List[str],
+    **kwargs
+) -> List[float]:
+    """
+    Batch reward computation for VERL using TRUE OFFLINE VLLM batch inference.
+    Much faster than sequential calls - processes all prompts in one batch.
+    
+    Args:
+        guidelines: List of generated guidelines
+        questions: List of questions
+        ground_truths: List of correct answers
+        
+    Returns:
+        List of rewards
+    """
+    alpha_acc = kwargs.get('alpha_acc', 1.0)
+    alpha_fmt = kwargs.get('alpha_fmt', 0.3)
+    alpha_len = kwargs.get('alpha_len', 0.0)
+    
+    # Get LLM and sampling params
+    llm = get_llm()
+    sampling_params = get_sampling_params()
+    
+    # Prepare all prompts at once for TRUE batch inference
+    prompts = []
+    for guideline, question in zip(guidelines, questions):
+        prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {question}\n\nGuideline: {guideline}"
+        prompts.append(prompt)
+    
+    # BATCH INFERENCE - all prompts processed together (much faster!)
+    print(f"[OFFLINE VLLM] Running batch inference for {len(prompts)} prompts...")
+    try:
+        outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
+    except Exception as e:
+        print(f"[OFFLINE VLLM] Batch inference failed: {e}")
+        # Fallback to sequential if batch fails
+        outputs = []
+        for prompt in prompts:
+            try:
+                out = llm.generate([prompt], sampling_params, use_tqdm=False)
+                outputs.extend(out)
+            except:
+                outputs.append(None)
+    
+    # Compute rewards for each output
+    rewards = []
+    for i, (output, guideline, question, gt) in enumerate(zip(outputs, guidelines, questions, ground_truths)):
+        if output is None or len(output.outputs) == 0:
+            print(f"[OFFLINE VLLM] Warning: Empty output for sample {i}")
+            rewards.append(0.0)
+            continue
+            
+        solver_output = output.outputs[0].text
+        
+        # Compute reward components
+        r_acc = acc_reward(solver_output, gt, use_boxed=True)
+        r_fmt = format_reward(solver_output)
+        r_len = length_reward(guideline)
+        
+        total_reward = alpha_acc * r_acc + alpha_fmt * r_fmt + alpha_len * r_len
+        
+        # Log first few samples
+        if i < 3:
+            print(f"\n{'='*60}")
+            print(f"[BATCH SAMPLE {i}]")
+            print(f"Question: {question[:100]}...")
+            print(f"Guideline: {guideline[:100]}...")
+            print(f"Solver output: {solver_output[:150]}...")
+            print(f"Ground truth: {gt}")
+            print(f"Rewards -> Acc: {r_acc:.2f} | Format: {r_fmt:.2f} | Length: {r_len:.2f} | Total: {total_reward:.3f}")
+            print(f"{'='*60}\n")
+        
+        rewards.append(total_reward)
+    
+    print(f"[OFFLINE VLLM] Batch processing complete. Avg reward: {sum(rewards)/len(rewards):.3f}")
+    return rewards

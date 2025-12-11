@@ -6,13 +6,13 @@ set -euo pipefail
 # Customize these paths/ports/names as needed.
 
 # Guide LLM
-GUIDE_MODEL_PATH=${GUIDE_MODEL_PATH:-"merge_models/546-nlp-gsm8k-grpo-qwen-2.5-3b-instruct-guidelines"}
+GUIDE_MODEL_PATH=${GUIDE_MODEL_PATH:-"merge_models/546-nlp-gsm8k-grpo-qwen-2.5-1.5b-instruct-guidelines"}
 GUIDE_PORT=${GUIDE_PORT:-1226}
 GUIDE_NAME=${GUIDE_NAME:-guide-llm}
 GUIDE_GPUS=${GUIDE_GPUS:-"4,5"}
 
 # Base LLM
-BASE_MODEL_PATH=${BASE_MODEL_PATH:-"/shared/data2/jiashuo5/pretrain_models/Qwen2.5-3B-Instruct"}
+BASE_MODEL_PATH=${BASE_MODEL_PATH:-"/shared/data2/jiashuo5/pretrain_models/Qwen2.5-1.5B-Instruct"}
 BASE_PORT=${BASE_PORT:-1225}
 BASE_NAME=${BASE_NAME:-base-llm}
 BASE_GPUS=${BASE_GPUS:-"6,7"}

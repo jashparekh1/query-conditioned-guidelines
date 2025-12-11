@@ -78,13 +78,20 @@ class NaiveRewardManager(AbstractRewardManager):
             prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
 
-            ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
-            data_source = data_item.non_tensor_batch[self.reward_fn_key]
+            ground_truth = data_item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None)
+            data_source = data_item.non_tensor_batch.get(self.reward_fn_key, "openai/gsm8k")
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
             extra_info["num_turns"] = num_turns
             extra_info["rollout_reward_scores"] = rollout_reward_scores
+
+            # Debug logging for first few examples
+            if not hasattr(self, '_debug_logged'):
+                self._debug_logged = 0
+            if self._debug_logged < 5:
+                print(f"[REWARD MANAGER DEBUG {self._debug_logged}] data_source={data_source}, ground_truth={ground_truth is not None}, extra_info keys={list(extra_info.keys())}")
+                self._debug_logged += 1
 
             score = self.compute_score(
                 data_source=data_source,
