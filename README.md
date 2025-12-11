@@ -283,18 +283,6 @@ Supported datasets:
 - Verify GPU allocation: `squeue -u $USER`
 - Check resource limits: `sacct -j <job_id>`
 
-## Citation
-
-If you use this code, please cite:
-
-```bibtex
-@article{query-conditioned-guidelines,
-  title={Query-Conditioned Guidelines for Reasoning},
-  author={Your Name},
-  year={2024}
-}
-```
-
 ## License
 
 See `LICENSE` file for details.
