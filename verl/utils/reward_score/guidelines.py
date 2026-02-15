@@ -1,6 +1,7 @@
 """
-Reward function for query-conditioned guidelines
-Three components: accuracy (EM) + format compliance + brevity
+Reward function for query-conditioned guidelines.
+Reward = answer accuracy only (1.0 if solver answer matches ground truth, 0.0 otherwise).
+Format and length terms are disabled by default.
 
 Using TRUE OFFLINE VLLM MODE:
 - Load model once with vllm.LLM (no separate server)
@@ -28,11 +29,36 @@ except RuntimeError:
 from vllm import LLM, SamplingParams
 from mathruler.grader import extract_boxed_content, grade_answer
 
-# Global LLM instance - initialized once in offline mode
-_llm_instance: Optional[LLM] = None
-_sampling_params: Optional[SamplingParams] = None
+# Optional: math_verify for proper math equivalence (e.g. 0.5 == 1/2). Set VERL_GUIDELINES_USE_MATH_VERIFY=1 to use.
+_math_verify_compute_score = None
+_math_verify_tried = False
 
-SYSTEM_PROMPT = """You are a careful and disciplined problem solver that follows a given guideline to reason step by step and produce the final answer.
+def _get_math_verify():
+    global _math_verify_compute_score, _math_verify_tried
+    if _math_verify_tried:
+        return _math_verify_compute_score
+    if os.environ.get("VERL_GUIDELINES_USE_MATH_VERIFY", "").strip().lower() in ("1", "true", "yes"):
+        _math_verify_tried = True
+        try:
+            from verl.utils.reward_score import math_verify
+            _math_verify_compute_score = math_verify.compute_score
+            print("")
+            print(">>> MATH_VERIFY IS ACTIVE: reward accuracy uses math equivalence (e.g. 0.5 == 1/2). <<<")
+            print("")
+        except Exception as e:
+            raise RuntimeError(
+                "VERL_GUIDELINES_USE_MATH_VERIFY=1 but math_verify could not be imported. "
+                "Install in the container with: pip install math-verify"
+            ) from e
+    else:
+        _math_verify_tried = True
+    return _math_verify_compute_score
+
+# Use shared solver prompt when experiments is on PYTHONPATH (same as eval)
+try:
+    from experiments.prompts import SOLVER_SYSTEM_PROMPT as SYSTEM_PROMPT
+except ImportError:
+    SYSTEM_PROMPT = """You are a careful and disciplined problem solver that follows a given guideline to reason step by step and produce the final answer.
 
 You are provided with:
 (1) A QUESTION that needs to be solved.
@@ -53,6 +79,10 @@ Your detailed internal reasoning process, including any calculations, logic, or 
 </think>
 \\boxed{your final answer here}"""
 
+# Global LLM instance - initialized once in offline mode
+_llm_instance: Optional[LLM] = None
+_sampling_params: Optional[SamplingParams] = None
+
 
 def format_reward(solver_output: str) -> float:
     """
@@ -64,10 +94,18 @@ def format_reward(solver_output: str) -> float:
     return 1.0 if match_result else 0.0
 
 
-def acc_reward(solver_output: str, ground_truth: str, use_boxed: bool = True) -> float:
+def acc_reward(solver_output: str, ground_truth: str, use_boxed: bool = True, use_math_verify: bool = False) -> float:
     """
-    Check if solver's answer matches ground truth
+    Check if solver's answer matches ground truth.
+    If use_math_verify and math_verify is available, use it (proper math equivalence, e.g. 0.5 == 1/2).
+    Otherwise use mathruler.grader.grade_answer (rule-based / string normalization).
     """
+    math_verify_fn = _get_math_verify() if use_math_verify else None
+    if math_verify_fn is not None:
+        try:
+            return float(math_verify_fn(solver_output, ground_truth))
+        except Exception:
+            pass
     if use_boxed:
         answer = extract_boxed_content(solver_output)
     else:
@@ -84,8 +122,13 @@ def length_reward(guideline: str, tau: float = 50.0) -> float:
     return 1.0 / (1.0 + num_tokens / tau)
 
 
+def _get_solver_model_path() -> str:
+    """Solver model path: VERL_GUIDELINES_SOLVER_MODEL env or default."""
+    return os.environ.get("VERL_GUIDELINES_SOLVER_MODEL", "Qwen/Qwen2.5-1.5B-Instruct")
+
+
 def init_offline_llm(
-    model_path: str = "Qwen/Qwen2.5-1.5B-Instruct",
+    model_path: str | None = None,
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
     max_model_len: int = 8192,
@@ -108,8 +151,17 @@ def init_offline_llm(
         LLM instance
     """
     global _llm_instance, _sampling_params
-    
+    if model_path is None:
+        model_path = _get_solver_model_path()
     if _llm_instance is None:
+        # Pin solver to a specific GPU when set (e.g. GPU 3 so 0,1,2 are for rollout/actor/ref)
+        solver_gpu_id = os.environ.get("VERL_GUIDELINES_SOLVER_GPU_ID")
+        if solver_gpu_id is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = solver_gpu_id
+            print(f"[OFFLINE VLLM] Using GPU(s) for solver: {solver_gpu_id}")
+        # v1 engine spawns a subprocess where Triton sees "0 active drivers" before CUDA init.
+        # Use legacy engine for the solver to avoid that (solver is single-GPU, no need for v1).
+        os.environ["VLLM_USE_V1"] = "0"
         print(f"[OFFLINE VLLM] Initializing LLM with model: {model_path}")
         print(f"[OFFLINE VLLM] Config: tp={tensor_parallel_size}, gpu_mem={gpu_memory_utilization}, dtype={dtype}")
         
@@ -124,10 +176,10 @@ def init_offline_llm(
             **kwargs
         )
         
-        # Initialize sampling params (greedy decoding for consistency)
+        # Initialize sampling params (greedy decoding). max_tokens=3072 to match training max_response_length and reduce empty outputs.
         _sampling_params = SamplingParams(
             temperature=0.0,
-            max_tokens=2048,
+            max_tokens=3072,
             top_p=1.0,
         )
         
@@ -140,13 +192,11 @@ def get_llm() -> LLM:
     """
     Get the global LLM instance.
     Initializes with default settings if not already initialized.
-    
-    Returns:
-        LLM instance
+    Uses VERL_GUIDELINES_SOLVER_MODEL env for solver model path when set.
     """
     global _llm_instance
     if _llm_instance is None:
-        return init_offline_llm()
+        return init_offline_llm(model_path=_get_solver_model_path())
     return _llm_instance
 
 
@@ -164,37 +214,47 @@ def get_sampling_params() -> SamplingParams:
     return _sampling_params
 
 
+def _solver_messages(question: str, guideline: str):
+    """Build chat messages for Qwen/instruct models so the solver gets proper format (avoids empty output)."""
+    user_content = (
+        f"Question: {question}\n\nGuideline: {guideline}\n\n"
+        "Please strictly follow the Guideline to solve the Question. "
+        "Put reasoning inside <think> </think> and final answer inside \\boxed{}."
+    )
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
 def call_solver(guideline: str, question: str) -> str:
     """
-    Call frozen solver directly using OFFLINE VLLM.
-    No server, no HTTP - direct inference with loaded model.
-    
-    Args:
-        guideline: Generated guideline from policy
-        question: Math question to solve
-        
-    Returns:
-        Solver's complete output
+    Call frozen solver using OFFLINE VLLM with chat format (required for Qwen2.5-Instruct to generate).
     """
     llm = get_llm()
     sampling_params = get_sampling_params()
-    
-    # Format prompt with system instructions, question, and guideline
-    prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {question}\n\nGuideline: {guideline}"
-    
+    messages = _solver_messages(question, guideline)
+
     try:
-        # Direct batch inference (even for single item, vllm optimizes internally)
-        outputs = llm.generate([prompt], sampling_params, use_tqdm=False)
-        
-        if outputs and len(outputs) > 0:
-            generated_text = outputs[0].outputs[0].text
-            return generated_text
+        # Use chat API so instruct models get proper format; raw generate() often returns empty for Qwen.
+        if hasattr(llm, "chat"):
+            outputs = llm.chat(messages=[messages], sampling_params=sampling_params, use_tqdm=False)
         else:
-            print(f"[OFFLINE VLLM] Warning: Empty output from model")
-            return ""
-            
+            prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {question}\n\nGuideline: {guideline}"
+            outputs = llm.generate([prompt], sampling_params, use_tqdm=False)
+
+        if outputs and len(outputs) > 0 and outputs[0].outputs:
+            generated_text = outputs[0].outputs[0].text
+            if generated_text is not None and len(generated_text.strip()) > 0:
+                return generated_text
+        if not hasattr(call_solver, "_empty_count"):
+            call_solver._empty_count = 0
+        call_solver._empty_count += 1
+        if call_solver._empty_count <= 5:
+            print(f"[OFFLINE VLLM] Warning: Solver returned empty [count={call_solver._empty_count}] (using chat={hasattr(llm, 'chat')})")
+        return ""
     except Exception as e:
-        print(f"[OFFLINE VLLM] Error during inference: {e}")
+        print(f"[OFFLINE VLLM] Error during solver inference: {e}")
         import traceback
         traceback.print_exc()
         return ""
@@ -205,20 +265,13 @@ def compute_score(
     ground_truth: str,     # Ground truth answer
     use_boxed: bool = True,
     alpha_acc: float = 1.0,
-    alpha_fmt: float = 0.3,
-    alpha_len: float = 0.0,  # Set to 0 to disable length penalty
+    alpha_fmt: float = 0.0,  # 0 = reward is accuracy only
+    alpha_len: float = 0.0,
     extra_info: dict = None
 ) -> float:
     """
-    Compute composite reward for a single guideline
-    
-    Args:
-        predict_str: Generated guideline (from policy)
-        ground_truth: Correct answer
-        extra_info: Dict with 'question' key
-        
-    Returns:
-        Composite reward: alpha_acc * acc + alpha_fmt * format + alpha_len * length
+    Compute reward for a single guideline. Reward = answer accuracy only (1.0 if correct, 0.0 otherwise).
+    Format and length terms are disabled by default (alpha_fmt=0, alpha_len=0).
     """
     if extra_info is None or 'question' not in extra_info:
         if not hasattr(compute_score, '_warned_missing_question'):
@@ -234,16 +287,15 @@ def compute_score(
     
     if not solver_output:
         if not hasattr(compute_score, '_warned_api_fail'):
-            print(f"ERROR: Solver API call failed. Guideline: {guideline[:100]}... Question: {question[:100]}...")
+            print(f"ERROR: Solver returned empty (offline vLLM produced no text for this sample). Guideline: {guideline[:100]}... Question: {question[:100]}...")
             compute_score._warned_api_fail = True
-        return 0.0  # API call failed
+        return 0.0  # no reward when solver output is empty
     
-    # Compute reward components
-    r_acc = acc_reward(solver_output, ground_truth, use_boxed)
-    r_fmt = format_reward(solver_output)  # Check SOLVER output, not guideline
-    r_len = length_reward(guideline)      # Check guideline length
-    
-    # Composite reward
+    # Reward = accuracy only (format/length not used when alpha_fmt=0, alpha_len=0)
+    use_math_verify = os.environ.get("VERL_GUIDELINES_USE_MATH_VERIFY", "").strip().lower() in ("1", "true", "yes")
+    r_acc = acc_reward(solver_output, ground_truth, use_boxed, use_math_verify=use_math_verify)
+    r_fmt = format_reward(solver_output) if alpha_fmt != 0 else 0.0
+    r_len = length_reward(guideline) if alpha_len != 0 else 0.0
     total_reward = alpha_acc * r_acc + alpha_fmt * r_fmt + alpha_len * r_len
     
     # Log for debugging (first few examples)
@@ -260,7 +312,7 @@ def compute_score(
     if not hasattr(compute_score, '_log_count'):
         compute_score._log_count = 0
     if compute_score._log_count < 10:
-        print(f"[REWARD DEBUG {compute_score._log_count}] Total reward: {total_reward:.4f} (Acc: {r_acc:.2f}, Fmt: {r_fmt:.2f}, Len: {r_len:.2f})")
+        print(f"[REWARD DEBUG {compute_score._log_count}] Reward (accuracy only): {total_reward:.4f} (Acc: {r_acc:.2f})")
         print(f"  Guideline: {guideline[:80]}...")
         print(f"  Question: {question[:80]}...")
         print(f"  Solver output: {solver_output[:80]}...")
@@ -269,7 +321,47 @@ def compute_score(
     return total_reward
 
 
-# VERL interface wrapper - optimized for TRUE batch inference
+def _run_solver_batch(
+    llm, sampling_params,
+    batch_guidelines: List[str],
+    batch_questions: List[str],
+    batch_ground_truths: List[str],
+    alpha_acc: float, alpha_fmt: float, alpha_len: float,
+) -> List[float]:
+    """Run one vLLM batch and return rewards for that slice."""
+    batch_messages = [_solver_messages(q, g) for g, q in zip(batch_guidelines, batch_questions)]
+    try:
+        if hasattr(llm, "chat"):
+            outputs = llm.chat(messages=batch_messages, sampling_params=sampling_params, use_tqdm=True)
+        else:
+            prompts = [f"{SYSTEM_PROMPT}\n\nQuestion: {q}\n\nGuideline: {g}" for g, q in zip(batch_guidelines, batch_questions)]
+            outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
+    except Exception as e:
+        print(f"[OFFLINE VLLM] Batch inference failed: {e}")
+        import traceback
+        traceback.print_exc()
+        outputs = [None] * len(batch_messages)
+    if len(outputs) < len(batch_messages):
+        outputs = list(outputs) + [None] * (len(batch_messages) - len(outputs))
+
+    use_math_verify = os.environ.get("VERL_GUIDELINES_USE_MATH_VERIFY", "").strip().lower() in ("1", "true", "yes")
+    rewards = []
+    for output, guideline, question, gt in zip(outputs, batch_guidelines, batch_questions, batch_ground_truths):
+        if output is None or not output.outputs:
+            rewards.append(0.0)
+            continue
+        solver_output = output.outputs[0].text
+        if solver_output is None or (isinstance(solver_output, str) and not solver_output.strip()):
+            rewards.append(0.0)
+            continue
+        r_acc = acc_reward(solver_output, gt, use_boxed=True, use_math_verify=use_math_verify)
+        r_fmt = format_reward(solver_output) if alpha_fmt != 0 else 0.0
+        r_len = length_reward(guideline) if alpha_len != 0 else 0.0
+        rewards.append(alpha_acc * r_acc + alpha_fmt * r_fmt + alpha_len * r_len)
+    return rewards
+
+
+# VERL interface wrapper - optimized for TRUE batch inference (with optional mini-batch cap)
 def compute_rewards_batch(
     guidelines: List[str],
     questions: List[str],
@@ -278,7 +370,11 @@ def compute_rewards_batch(
 ) -> List[float]:
     """
     Batch reward computation for VERL using TRUE OFFLINE VLLM batch inference.
-    Much faster than sequential calls - processes all prompts in one batch.
+    Much faster than sequential - processes prompts in one or more batches.
+    
+    Optional: set VERL_GUIDELINES_SOLVER_BATCH_SIZE (e.g. 24) to cap the solver
+    batch size. Reduces OOM risk at 3072 length when the full step batch is 120;
+    unset or 0 = no cap (one big batch).
     
     Args:
         guidelines: List of generated guidelines
@@ -289,63 +385,31 @@ def compute_rewards_batch(
         List of rewards
     """
     alpha_acc = kwargs.get('alpha_acc', 1.0)
-    alpha_fmt = kwargs.get('alpha_fmt', 0.3)
+    alpha_fmt = kwargs.get('alpha_fmt', 0.0)  # reward = accuracy only by default
     alpha_len = kwargs.get('alpha_len', 0.0)
-    
-    # Get LLM and sampling params
+
+    cap = os.environ.get("VERL_GUIDELINES_SOLVER_BATCH_SIZE", "").strip()
+    chunk_size = int(cap) if cap.isdigit() and int(cap) > 0 else 0
+    if chunk_size == 0:
+        chunk_size = len(guidelines)  # one batch
+
     llm = get_llm()
     sampling_params = get_sampling_params()
-    
-    # Prepare all prompts at once for TRUE batch inference
-    prompts = []
-    for guideline, question in zip(guidelines, questions):
-        prompt = f"{SYSTEM_PROMPT}\n\nQuestion: {question}\n\nGuideline: {guideline}"
-        prompts.append(prompt)
-    
-    # BATCH INFERENCE - all prompts processed together (much faster!)
-    print(f"[OFFLINE VLLM] Running batch inference for {len(prompts)} prompts...")
-    try:
-        outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
-    except Exception as e:
-        print(f"[OFFLINE VLLM] Batch inference failed: {e}")
-        # Fallback to sequential if batch fails
-        outputs = []
-        for prompt in prompts:
-            try:
-                out = llm.generate([prompt], sampling_params, use_tqdm=False)
-                outputs.extend(out)
-            except:
-                outputs.append(None)
-    
-    # Compute rewards for each output
-    rewards = []
-    for i, (output, guideline, question, gt) in enumerate(zip(outputs, guidelines, questions, ground_truths)):
-        if output is None or len(output.outputs) == 0:
-            print(f"[OFFLINE VLLM] Warning: Empty output for sample {i}")
-            rewards.append(0.0)
-            continue
-            
-        solver_output = output.outputs[0].text
-        
-        # Compute reward components
-        r_acc = acc_reward(solver_output, gt, use_boxed=True)
-        r_fmt = format_reward(solver_output)
-        r_len = length_reward(guideline)
-        
-        total_reward = alpha_acc * r_acc + alpha_fmt * r_fmt + alpha_len * r_len
-        
-        # Log first few samples
-        if i < 3:
-            print(f"\n{'='*60}")
-            print(f"[BATCH SAMPLE {i}]")
-            print(f"Question: {question[:100]}...")
-            print(f"Guideline: {guideline[:100]}...")
-            print(f"Solver output: {solver_output[:150]}...")
-            print(f"Ground truth: {gt}")
-            print(f"Rewards -> Acc: {r_acc:.2f} | Format: {r_fmt:.2f} | Length: {r_len:.2f} | Total: {total_reward:.3f}")
-            print(f"{'='*60}\n")
-        
-        rewards.append(total_reward)
-    
-    print(f"[OFFLINE VLLM] Batch processing complete. Avg reward: {sum(rewards)/len(rewards):.3f}")
-    return rewards
+
+    all_rewards: List[float] = []
+    for start in range(0, len(guidelines), chunk_size):
+        end = min(start + chunk_size, len(guidelines))
+        g_slice = guidelines[start:end]
+        q_slice = questions[start:end]
+        gt_slice = ground_truths[start:end]
+        print(f"[OFFLINE VLLM] Batch solver: running inference for {len(g_slice)} prompts (chat format)...")
+        chunk_rewards = _run_solver_batch(
+            llm, sampling_params, g_slice, q_slice, gt_slice,
+            alpha_acc, alpha_fmt, alpha_len,
+        )
+        all_rewards.extend(chunk_rewards)
+
+    n = len(all_rewards)
+    avg_r = sum(all_rewards) / n if n else 0.0
+    print(f"[OFFLINE VLLM] Batch solver done. {n} samples, avg reward: {avg_r:.3f}")
+    return all_rewards

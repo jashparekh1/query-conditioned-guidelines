@@ -60,6 +60,49 @@ class NaiveRewardManager(AbstractRewardManager):
 
         already_print_data_sources = {}
 
+        # Batch path for guidelines: one batched solver call instead of 120 sequential (much faster)
+        batch_size = len(data)
+        all_guidelines = True
+        for i in range(batch_size):
+            ds = data[i].non_tensor_batch.get(self.reward_fn_key, "")
+            if ds != "guidelines":
+                all_guidelines = False
+                break
+        if all_guidelines and batch_size > 0:
+            guidelines_list = []
+            questions_list = []
+            ground_truths_list = []
+            response_lengths = []
+            for i in range(batch_size):
+                data_item = data[i]
+                prompt_length = data_item.batch["prompts"].shape[-1]
+                valid_response_length = int(data_item.batch["attention_mask"][prompt_length:].sum().item())
+                response_ids = data_item.batch["responses"][:valid_response_length]
+                response_str = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+                extra_info = data_item.non_tensor_batch.get("extra_info", {})
+                question = extra_info.get("question", "")
+                ground_truth = data_item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None)
+                guidelines_list.append(response_str)
+                questions_list.append(question)
+                ground_truths_list.append(ground_truth if ground_truth is not None else "")
+                response_lengths.append(valid_response_length)
+            try:
+                from verl.utils.reward_score import guidelines as guidelines_module
+                rewards_list = guidelines_module.compute_rewards_batch(
+                    guidelines_list, questions_list, ground_truths_list
+                )
+                for i in range(batch_size):
+                    if response_lengths[i] > 0:
+                        reward_tensor[i, response_lengths[i] - 1] = rewards_list[i]
+                    else:
+                        reward_tensor[i, 0] = rewards_list[i]
+                if return_dict:
+                    return {"reward_tensor": reward_tensor, "reward_extra_info": reward_extra_info}
+                return reward_tensor
+            except Exception as e:
+                print(f"[REWARD MANAGER] Guidelines batch path failed ({e}), falling back to per-sample.")
+                # fall through to per-sample loop below
+
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
 

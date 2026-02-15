@@ -1,0 +1,5 @@
+# vLLM for inference / MATH-500 eval. Install after requirements.txt.
+# Prebuilt wheels exist for x86_64 + Linux. On ARM (aarch64) pip may try to build
+# from source and fail (e.g. cc1plus: invalid feature modifier -march=...).
+# Install this on a GPU node or x86_64 machine if your login node is ARM.
+vllm>=0.7.3,<=0.9.1

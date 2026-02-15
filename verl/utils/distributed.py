@@ -73,9 +73,15 @@ def destroy_global_process_group():
 
 def initialize_global_process_group_ray(timeout_second=None):
     # in current ray environment, LOCAL_RANK is always zero.
+    # When timeout_second is None, use VERL_DIST_TIMEOUT_SECONDS env (e.g. 1800 for 30 min)
+    # to avoid Gloo barrier timeouts during slow checkpoint saves on shared filesystems.
 
     import torch.distributed
 
+    if timeout_second is None:
+        env_timeout = os.environ.get("VERL_DIST_TIMEOUT_SECONDS", "").strip()
+        if env_timeout.isdigit():
+            timeout_second = int(env_timeout)
     timeout = timedelta(seconds=timeout_second) if timeout_second is not None else None
 
     if not torch.distributed.is_initialized():

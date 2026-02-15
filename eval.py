@@ -12,7 +12,11 @@ from typing import List, Dict, Any, Tuple
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
 
-GUILDER_SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a given problem.
+# Use same prompts as training (experiments.prompts) so train and eval match
+try:
+    from experiments.prompts import GUILDER_SYSTEM_PROMPT, SOLVER_SYSTEM_PROMPT
+except ImportError:
+    GUILDER_SYSTEM_PROMPT = """You are a reasoning planner that creates structured, step-by-step guidelines for solving a given problem.
 Your goal is not to answer the question directly, but to produce a high-quality, explicit plan that guides another model to solve it.
 Each plan should:
 1. Analyze what the problem is asking.
@@ -21,7 +25,7 @@ Each plan should:
 
 Format your output as a concise, ordered list of reasoning steps or directives. Avoid giving the final answer."""
 
-SOLVER_SYSTEM_PROMPT = """You are a careful and disciplined problem solver that follows a given guideline to reason step by step and produce the final answer.
+    SOLVER_SYSTEM_PROMPT = """You are a careful and disciplined problem solver that follows a given guideline to reason step by step and produce the final answer.
 
 You are provided with:
 (1) A QUESTION that needs to be solved.

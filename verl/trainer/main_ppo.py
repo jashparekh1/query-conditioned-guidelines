@@ -91,7 +91,7 @@ def run_ppo(config) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-@ray.remote(num_cpus=1, num_gpus=1)  # TaskRunner needs GPU for offline VLLM reward computation
+@ray.remote(num_cpus=1, num_gpus=1)  # Solver vLLM runs in TaskRunner; needs 1 GPU. Ray assigns one from the pool.
 class TaskRunner:
     """Ray remote class for executing distributed PPO training tasks.
 
