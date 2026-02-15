@@ -1,6 +1,6 @@
 # Query-Conditioned Guidelines for Reasoning
 
-This repository implements a two-stage approach for improving reasoning in large language models through query-conditioned guidelines. The method uses a **Guilder** model to generate structured guidelines for solving problems, and a **Solver** model that follows these guidelines to produce answers.
+This repository implements a two-stage approach for improving reasoning in large language models through query-conditioned guidelines. The method uses a **Planner** model to generate structured guidelines for solving problems, and a **Solver** model that follows these guidelines to produce answers.
 
 ## Overview
 
@@ -15,7 +15,7 @@ This approach enables better reasoning by decomposing problem-solving into expli
 
 ### Prerequisites
 
-- Access to Delta cluster (Georgia Tech)
+- Access to Delta cluster
 - Python 3.10+
 - CUDA-capable GPUs
 - Singularity container with PyTorch 2.5.0.1
