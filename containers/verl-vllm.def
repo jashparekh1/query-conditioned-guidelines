@@ -1,0 +1,25 @@
+# Apptainer definition: verl + vLLM + Ray on NGC PyTorch 24.04 (CUDA 12.4).
+# Build on aarch64: apptainer build --fakeroot verl-vllm-24.04.sif verl-vllm.def
+
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.04-py3
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export PIP_NO_CACHE_DIR=1
+    apt-get update && apt-get install -y --no-install-recommends git \
+        && rm -rf /var/lib/apt/lists/*
+    pip install --upgrade pip
+    pip install "vllm>=0.9,<0.11"
+    pip install "ray[default]"
+    git clone https://github.com/volcengine/verl /opt/verl
+    cd /opt/verl && git checkout 8fdc4d3f202f41461f4de9f42a637228e342668b
+    pip install --no-deps -e .
+    pip install tensordict transformers datasets accelerate tokenizers pyarrow pandas
+
+%environment
+    export WORKDIR=/workspace
+
+%labels
+    Author query-conditioned-guidelines
+    Image verl-vllm on PyTorch 24.04

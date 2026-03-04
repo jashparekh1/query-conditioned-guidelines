@@ -133,6 +133,11 @@ ENV/
 # data
 *.parquet
 
+# container images (build recipes stay in git)
+*.sif
+
+# core dumps
+core
 
 # local logs
 logs

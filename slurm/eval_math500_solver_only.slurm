@@ -1,23 +1,21 @@
 #!/bin/bash
 #SBATCH --account=bfgx-dtai-gh
 #SBATCH --partition=ghx4
-#SBATCH --job-name=train-20step
+#SBATCH --job-name=eval-solver-only
 #SBATCH --chdir=/projects/bfgx/jparekh/query-conditioned-guidelines
-#SBATCH --output=experiments/logs/train_20step_%j.out
-#SBATCH --error=experiments/logs/train_20step_%j.err
+#SBATCH --output=experiments/logs/eval_solver_only_%j.out
+#SBATCH --error=experiments/logs/eval_solver_only_%j.err
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:nvidia_gh200_120gb:4
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=200G
+#SBATCH --gres=gpu:nvidia_gh200_120gb:1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
 
-# 20-step smoke test via sbatch. Same as run_train_20step_test.sh but runs in batch.
-# Optional: export WANDB_API_KEY=your_key before sbatch for wandb logging.
-# Submit from repo root so --chdir finds the repo (or adjust --chdir to your path).
+# Solver-only baseline on MATH-500: no planner, questions go directly to solver.
+# This tells us the solver's raw capability without any guideline.
 
 set -e
-# Job runs in repo root via --chdir
 PROJECT_ROOT="/projects/bfgx/jparekh/query-conditioned-guidelines"
 cd "$PROJECT_ROOT"
 mkdir -p experiments/logs
@@ -33,30 +31,23 @@ fi
 
 if [[ ! -f "$SIF" ]]; then
   echo "ERROR: SIF not found. Tried: $SIF_REPO and $WORK_NVME/verl-vllm-24.04.sif"
-  echo "Copy your built SIF to: $SIF_REPO"
   exit 1
 fi
 
-# Ensure WORK_NVME exists and is writable (bound as /nvme for HF cache, apptainer cache)
 if ! mkdir -p "$WORK_NVME/hf_cache" "$WORK_NVME/apptainer_cache"; then
-  echo "ERROR: Cannot create $WORK_NVME (or subdirs). Check that /work/nvme/bfgx exists and is writable on this node."
+  echo "ERROR: Cannot create $WORK_NVME (or subdirs)."
   exit 1
 fi
-if ! touch "$WORK_NVME/hf_cache/.write_test" 2>/dev/null; then
-  echo "ERROR: $WORK_NVME is not writable. Cannot use /nvme for HF cache."
-  exit 1
-fi
-rm -f "$WORK_NVME/hf_cache/.write_test"
 
 echo "=========================================="
-echo "20-step train smoke test (sbatch)"
+echo "MATH-500 Eval: Solver-only baseline (no guideline)"
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
+echo "Model: Qwen/Qwen2.5-3B-Instruct"
 echo "SIF: $SIF"
 echo "=========================================="
 
-# Avoid Apptainer warning: do not forward host HF_* into container
 unset HF_HOME HF_DATASETS_CACHE TRANSFORMERS_CACHE HUGGINGFACE_HUB_CACHE 2>/dev/null || true
 
 apptainer exec --nv \
@@ -64,28 +55,34 @@ apptainer exec --nv \
   --bind "$WORK_NVME:/nvme" \
   --bind "$WORK_NVME/apptainer_cache:/root/.cache" \
   --env VERL_PATH=/opt/verl \
-  --env VLLM_TORCH_DTYPE=bfloat16 \
-  --env TORCH_DTYPE=bfloat16 \
   --env HF_HOME=/tmp/hf_cache \
   --env HF_DATASETS_CACHE=/tmp/hf_cache \
   --env HF_TOKEN="${HF_TOKEN:-}" \
   --env TRITON_LIBCUDA_PATH=/usr/local/cuda/compat/lib.real \
-  --env WANDB_API_KEY="${WANDB_API_KEY:-}" \
-  --env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" \
+  --env CUDA_VISIBLE_DEVICES=0 \
   --env PYTHONUNBUFFERED=1 \
   --env PYTHONNOUSERSITE=1 \
   --env TMPDIR=/tmp \
-  --env RAY_TMPDIR=/tmp \
-  --env VERL_GUIDELINES_USE_MATH_VERIFY="${VERL_GUIDELINES_USE_MATH_VERIFY:-1}" \
-  --env VERL_GUIDELINES_LOG_DIR="${VERL_GUIDELINES_LOG_DIR:-/workspace/query-conditioned-guidelines/experiments/logs/solver_debug}" \
+  --env VLLM_WORKER_MULTIPROC_METHOD=spawn \
   "$SIF" \
   bash -c '
-    source /workspace/setup_verl_apptainer.sh
+    source /workspace/setup_verl_apptainer.sh 2>/dev/null || true
+    # Override HF cache back to /tmp (setup script sets /nvme which may be full)
+    export HF_HOME=/tmp/hf_cache
+    export HF_DATASETS_CACHE=/tmp/hf_cache
     cd /workspace/query-conditioned-guidelines
     pip install -q math-verify || { echo "ERROR: pip install math-verify failed"; exit 1; }
-    bash experiments/run_train_20step_test.sh
+    python experiments/run_eval_math500.py \
+      --model Qwen/Qwen2.5-3B-Instruct \
+      --no_guideline \
+      --tensor_parallel_size 1 \
+      --gpu_memory_utilization 0.7 \
+      --solver_max_new_tokens 2048 \
+      --batch_size 32 \
+      --out_dir experiments/outputs/math500_solver_only
   '
 
 echo "=========================================="
-echo "Job finished."
+echo "Solver-only eval finished."
+echo "Results: experiments/outputs/math500_solver_only/"
 echo "=========================================="

@@ -1,0 +1,30 @@
+# verl + vLLM + Ray on NGC PyTorch 24.04 (CUDA 12.4).
+# Build on aarch64 (e.g. GH200 node) so the image matches your cluster.
+# Usage: see containers/README-verl-vllm-build.md
+
+FROM nvcr.io/nvidia/pytorch:24.04-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_NO_CACHE_DIR=1
+
+# System deps if needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# vLLM and Ray (match versions used with verl 0.5)
+RUN pip install --upgrade pip \
+    && pip install "vllm>=0.9,<0.11" \
+    && pip install "ray[default]"
+
+# verl: clone and install editable (no-deps; base + vLLM + ray cover most)
+ARG VERL_COMMIT=8fdc4d3f202f41461f4de9f42a637228e342668b
+RUN git clone https://github.com/volcengine/verl /opt/verl \
+    && cd /opt/verl \
+    && git checkout ${VERL_COMMIT} \
+    && pip install --no-deps -e .
+
+# Optional: install verl's deps that might be missing (adjust if build fails)
+RUN pip install tensordict transformers datasets accelerate tokenizers pyarrow pandas
+
+WORKDIR /workspace

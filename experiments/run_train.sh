@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Train guilder (planner) on NuminaMath-CoT 30k for 300 steps.
+# Train planner on NuminaMath-CoT 30k for 300 steps.
 # - Model: Qwen2.5-3B-Instruct (planner and solver same model)
 # - Sequence length: 3072
 # - Checkpoint: default every 25 steps; set VERL_SAVE_FREQ=50 and VERL_CHECKPOINT_DIR for 300-step (e.g. NVMe).
@@ -20,23 +20,29 @@ cd "$PROJECT_ROOT"
 
 # Paths: set DATA_DIR to directory containing train.parquet from prepare_numinamath.py
 export DATA_DIR="${DATA_DIR:-$PROJECT_ROOT/experiments/data/numinamath_30k}"
-export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}"
+export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-7B-Instruct}"
 
-# Solver model for reward computation (same as planner for this experiment)
-export VERL_GUIDELINES_SOLVER_MODEL="${MODEL_PATH}"
+# Solver model for reward computation. Default: quantized 14B for reliable reward signal.
+# AWQ is natively supported by vLLM (no extra packages needed, works on ARM/aarch64).
+export VERL_GUIDELINES_SOLVER_MODEL="${VERL_GUIDELINES_SOLVER_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"
 # Use math_verify for reward accuracy (math equivalence: 0.5 == 1/2). Requires: pip install math-verify
 export VERL_GUIDELINES_USE_MATH_VERIFY="${VERL_GUIDELINES_USE_MATH_VERIFY:-1}"
-# Experiment name suffix so wandb/logs distinguish math_verify vs mathruler runs
-if [[ "${VERL_GUIDELINES_USE_MATH_VERIFY}" =~ ^(1|true|yes)$ ]]; then
-  export VERL_EXPERIMENT_SUFFIX="-mathverify"
-else
-  export VERL_EXPERIMENT_SUFFIX=""
+# Counterfactual reward: subtract solver baseline (pre-computed without guidelines).
+# Set to baselines.json path to enable. Generate with: python -m experiments.precompute_baselines
+export VERL_GUIDELINES_BASELINES_PATH="${VERL_GUIDELINES_BASELINES_PATH:-$DATA_DIR/baselines.json}"
+# Experiment name suffix so wandb/logs distinguish runs. Override with VERL_EXPERIMENT_SUFFIX env.
+if [[ -z "${VERL_EXPERIMENT_SUFFIX:-}" ]]; then
+  if [[ "${VERL_GUIDELINES_USE_MATH_VERIFY}" =~ ^(1|true|yes)$ ]]; then
+    export VERL_EXPERIMENT_SUFFIX="-mathverify"
+  else
+    export VERL_EXPERIMENT_SUFFIX=""
+  fi
 fi
 
 # Optional: pass WANDB_API_KEY to Ray workers for wandb logging
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
 # Checkpoint dir (default: under project). Set to /nvme/... in 300-step slurm to use node NVMe and avoid full /projects.
-export VERL_CHECKPOINT_DIR="${VERL_CHECKPOINT_DIR:-checkpoints/query-conditioned-guidelines/numinamath30k-3b-300steps${VERL_EXPERIMENT_SUFFIX}}"
+export VERL_CHECKPOINT_DIR="${VERL_CHECKPOINT_DIR:-checkpoints/query-conditioned-guidelines/numinamath30k-7b-300steps${VERL_EXPERIMENT_SUFFIX}}"
 # Save frequency (default 25). Use 50 for 300-step to reduce checkpoint count and space.
 export VERL_SAVE_FREQ="${VERL_SAVE_FREQ:-25}"
 
@@ -77,17 +83,17 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}" \
 PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
   algorithm.adv_estimator=grpo \
   data.train_files="$DATA_DIR/train.parquet" \
-  data.val_files="$DATA_DIR/test.parquet" \
-  data.train_batch_size=30 \
+  data.val_files="${VERL_VAL_FILE:-$DATA_DIR/test.parquet}" \
+  data.train_batch_size="${VERL_TRAIN_BATCH_SIZE:-60}" \
   data.max_prompt_length=3072 \
   data.max_response_length=3072 \
   data.filter_overlong_prompts=True \
   data.truncation=error \
   actor_rollout_ref.model.path="$MODEL_PATH" \
-  actor_rollout_ref.actor.optim.lr=5e-6 \
+  actor_rollout_ref.actor.optim.lr="${VERL_LR:-1e-6}" \
   actor_rollout_ref.model.use_remove_padding=False \
-  actor_rollout_ref.actor.ppo_mini_batch_size=24 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.actor.ppo_mini_batch_size="${VERL_TRAIN_BATCH_SIZE:-60}" \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.actor.use_kl_loss=True \
   actor_rollout_ref.actor.entropy_coeff=0 \
   actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -95,26 +101,26 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-  actor_rollout_ref.rollout.n=8 \
+  actor_rollout_ref.rollout.n="${VERL_ROLLOUT_N:-4}" \
   actor_rollout_ref.rollout.enable_chunked_prefill=False \
-  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
-  algorithm.use_kl_in_reward=True \
+  algorithm.use_kl_in_reward=False \
   trainer.critic_warmup=0 \
   trainer.logger=wandb \
   trainer.project_name=query-conditioned-guidelines \
-  trainer.experiment_name=numinamath30k-3b-300steps${VERL_EXPERIMENT_SUFFIX} \
+  trainer.experiment_name=numinamath30k-7b-300steps${VERL_EXPERIMENT_SUFFIX} \
   trainer.default_local_dir="$VERL_CHECKPOINT_DIR" \
   trainer.val_before_train=False \
   trainer.n_gpus_per_node=3 \
   trainer.nnodes=1 \
   trainer.total_epochs=10 \
-  trainer.total_training_steps=300 \
+  trainer.total_training_steps="${VERL_TOTAL_STEPS:-300}" \
   trainer.save_freq="$VERL_SAVE_FREQ" \
-  trainer.test_freq=50 \
+  trainer.test_freq="${VERL_TEST_FREQ:-50}" \
   $([ -n "$WANDB_API_KEY" ] && echo "+ray_kwargs.ray_init.runtime_env.env_vars.WANDB_API_KEY=$WANDB_API_KEY") \
   "$@" 2>&1 | tee experiments/logs/train_$(date +%Y%m%d_%H%M%S).log
