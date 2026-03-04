@@ -1,36 +1,17 @@
 #!/bin/bash
-# Path configuration for GRPO training
+# Path configuration for GRPO training.
+# Only used outside the container (local dev). Inside the container,
+# run_train.sh detects /opt/verl and ignores this file.
 
-# Project root
 export PROJECT_ROOT=/projects/bfgx/jparekh/query-conditioned-guidelines
 
-# External dependencies
-export VERL_PATH=/projects/bfgx/jparekh/test_ngc/verl
-export VLLM_PATH=/projects/bfgx/jparekh/test_ngc/vllm
+# External dependencies (only needed if not using the container)
+export VERL_PATH=${VERL_PATH:-/opt/verl}
+export VLLM_PATH=${VLLM_PATH:-}
 
-# Add to Python path
-export PYTHONPATH=$VERL_PATH:$VLLM_PATH:$PYTHONPATH
-
-# Data paths  
-export GSM8K_TRAIN=$PROJECT_ROOT/data/gsm8k/train.parquet
-export GSM8K_TEST=$PROJECT_ROOT/data/gsm8k/test.parquet
-
-# Model
-export QWEN_1_5B=Qwen/Qwen2.5-1.5B-Instruct
-export QWEN_3B=Qwen/Qwen2.5-3B-Instruct
-export QWEN_7B=Qwen/Qwen2.5-7B-Instruct
+export PYTHONPATH=$PROJECT_ROOT:$VERL_PATH:${VLLM_PATH:+$VLLM_PATH:}$PYTHONPATH
 
 # Cache directory
-export HF_HOME=/projects/bfgx/jparekh/causal-inference-project/v2/cache
+export HF_HOME=${HF_HOME:-/tmp/hf_cache}
 
-# WandB
-export WANDB_API_KEY=705ca850b67f54b4b59da03f625d5751d9b984d1
-
-echo "================================"
-echo "Project: $PROJECT_ROOT"
-echo "VERL: $VERL_PATH"
-echo "vLLM: $VLLM_PATH"
-echo "Train: $GSM8K_TRAIN"
-echo "Model 1.5B: $QWEN_1_5B"
-echo "Model 3B: $QWEN_3B"
-echo "================================"
+# WandB: set WANDB_API_KEY in your environment, not here.

@@ -40,7 +40,7 @@ query-conditioned-guidelines/
 │   ├── precompute_baselines.py     # Pre-compute solver baselines (no guideline)
 │   ├── data/                       # Prepared datasets (parquet files)
 │   │   ├── dapomath_30k/           # DAPO-Math 30k (train + test)
-│   │   ├── dapomath_3k_prm/        # DAPO-Math 3k subset
+│   │   ├── dapomath_3k/        # DAPO-Math 3k subset
 │   │   ├── numinamath_30k/         # NuminaMath-CoT 30k
 │   │   ├── numinamath_30k_v7/      # NuminaMath-CoT 30k (filtered v7)
 │   │   └── math500_eval/           # MATH-500 eval set
@@ -64,7 +64,7 @@ query-conditioned-guidelines/
 | Dataset | Source | Size | Location |
 |---------|--------|------|----------|
 | DAPO-Math 30k | `BytedTsinghua-SIA/DAPO-Math-17k` (upsampled) | 30k train / 500 test | `experiments/data/dapomath_30k/` |
-| DAPO-Math 3k | Subset of above | 3k train / 500 test | `experiments/data/dapomath_3k_prm/` |
+| DAPO-Math 3k | Subset of above | 3k train / 500 test | `experiments/data/dapomath_3k/` |
 | NuminaMath-CoT 30k | `AI-MO/NuminaMath-CoT` | 30k train / 500 test | `experiments/data/numinamath_30k/` |
 | MATH-500 (eval) | `HuggingFaceH4/MATH-500` | 500 test | `experiments/data/math500_eval/` |
 
@@ -85,7 +85,7 @@ Pre-computed solver accuracy on each question **without** any guideline, used fo
 |------|---------|---------|
 | `experiments/data/numinamath_30k/baselines.json` | NuminaMath-CoT 30k | 30,000 |
 | `experiments/data/dapomath_30k/baselines.json` | DAPO-Math 30k | 30,000 |
-| `experiments/data/dapomath_3k_prm/prm_baselines.json` | DAPO-Math 3k (PRM scores) | 3,000 |
+| `experiments/data/dapomath_3k/prm_baselines.json` | DAPO-Math 3k (PRM scores) | 3,000 |
 
 ## Training
 

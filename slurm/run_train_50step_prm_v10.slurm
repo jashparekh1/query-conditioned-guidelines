@@ -130,7 +130,7 @@ apptainer exec --nv \
   --env VERL_GUIDELINES_PRM_LAMBDA=0.5 \
   --env VERL_GUIDELINES_PRM_SOFTMIN_TEMP=0.1 \
   --env VERL_GUIDELINES_BOXED_PENALTY=0.5 \
-  --env VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k_prm/prm_baselines.json" \
+  --env VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k/prm_baselines.json" \
   --env VERL_GUIDELINES_SOLVER_GPU_MEM=0.35 \
   --env VLLM_USE_V1=0 \
   "$SIF" \
@@ -141,7 +141,7 @@ apptainer exec --nv \
     export PYTHONPATH="/workspace/query-conditioned-guidelines:${PYTHONPATH}"
 
     # Step 0: Create 3k training subset matching PRM baselines
-    SUBSET_DIR="experiments/data/dapomath_3k_prm"
+    SUBSET_DIR="experiments/data/dapomath_3k"
     echo "=== Creating 3k training subset from PRM baselines ==="
     python -m experiments.create_prm_subset \
       --baselines experiments/data/dapomath_30k/prm_baselines.json \

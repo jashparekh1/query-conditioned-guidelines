@@ -5,7 +5,7 @@ Usage:
     python -m experiments.create_prm_subset \
         --baselines experiments/data/dapomath_30k/prm_baselines.json \
         --input experiments/data/dapomath_30k/train.parquet \
-        --output experiments/data/dapomath_3k_prm/train.parquet
+        --output experiments/data/dapomath_3k/train.parquet
 """
 import argparse
 import json

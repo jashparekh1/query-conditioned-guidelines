@@ -91,7 +91,7 @@ apptainer exec --nv \
   --env VERL_GUIDELINES_PRM_LAMBDA=0.5 \
   --env VERL_GUIDELINES_PRM_SOFTMIN_TEMP=0.1 \
   --env VERL_GUIDELINES_BOXED_PENALTY=0.5 \
-  --env VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k_prm/prm_baselines.json" \
+  --env VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k/prm_baselines.json" \
   --env VERL_GUIDELINES_SOLVER_GPU_MEM=0.35 \
   --env VLLM_USE_V1=0 \
   "$SIF" \
@@ -107,10 +107,10 @@ apptainer exec --nv \
     export VERL_TEST_FREQ=100
     export VERL_ROLLOUT_N=16
     export MODEL_PATH="Qwen/Qwen3-4B-Instruct-2507"
-    export DATA_DIR="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k_prm"
+    export DATA_DIR="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k"
     export VERL_GUIDELINES_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_30k/baselines.json"
-    export VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k_prm/prm_baselines.json"
-    export VERL_VAL_FILE="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k_prm/test.parquet"
+    export VERL_GUIDELINES_PRM_BASELINES_PATH="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k/prm_baselines.json"
+    export VERL_VAL_FILE="/workspace/query-conditioned-guidelines/experiments/data/dapomath_3k/test.parquet"
     bash experiments/run_train.sh \
       trainer.experiment_name=smoke-prm-v10 \
       trainer.logger=console \
